@@ -5,6 +5,8 @@ import io.modelcontextprotocol.kotlin.sdk.PromptMessageContent
 import io.modelcontextprotocol.kotlin.sdk.TextContent
 import io.modelcontextprotocol.kotlin.sdk.Tool
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
@@ -53,6 +55,8 @@ internal fun normalizeJsonElement(element: kotlinx.serialization.json.JsonElemen
 internal const val DEFAULT_MAX_RESPONSE_SIZE = 100_000
 @PublishedApi
 internal const val DEFAULT_MAX_PAGE_SIZE = 20
+@PublishedApi
+internal const val DEFAULT_TOOL_TIMEOUT_MS = 120_000L
 
 @OptIn(InternalSerializationApi::class)
 inline fun <reified I : Any> Server.mcpTool(
@@ -68,12 +72,19 @@ inline fun <reified I : Any> Server.mcpTool(
         handler = { request ->
             try {
                 CallToolResult(
-                    content = execute(
-                        lenientJson.decodeFromJsonElement(
-                            I::class.serializer(),
-                            normalizeJsonElement(request.arguments)
+                    content = withTimeout(DEFAULT_TOOL_TIMEOUT_MS) {
+                        execute(
+                            lenientJson.decodeFromJsonElement(
+                                I::class.serializer(),
+                                normalizeJsonElement(request.arguments)
+                            )
                         )
-                    )
+                    }
+                )
+            } catch (e: TimeoutCancellationException) {
+                CallToolResult(
+                    content = listOf(TextContent("Error: Tool execution timed out after ${DEFAULT_TOOL_TIMEOUT_MS / 1000}s")),
+                    isError = true
                 )
             } catch (e: Exception) {
                 CallToolResult(
@@ -186,9 +197,16 @@ inline fun Server.mcpTool(
         description = description,
         inputSchema = Tool.Input(),
         handler = {
-            CallToolResult(
-                content = execute()
-            )
+            try {
+                CallToolResult(
+                    content = withTimeout(DEFAULT_TOOL_TIMEOUT_MS) { execute() }
+                )
+            } catch (e: TimeoutCancellationException) {
+                CallToolResult(
+                    content = listOf(TextContent("Error: Tool execution timed out after ${DEFAULT_TOOL_TIMEOUT_MS / 1000}s")),
+                    isError = true
+                )
+            }
         }
     )
 }
@@ -203,9 +221,16 @@ inline fun Server.mcpTool(
         description = description,
         inputSchema = Tool.Input(),
         handler = {
-            CallToolResult(
-                content = listOf(TextContent(execute()))
-            )
+            try {
+                CallToolResult(
+                    content = listOf(TextContent(withTimeout(DEFAULT_TOOL_TIMEOUT_MS) { execute() }))
+                )
+            } catch (e: TimeoutCancellationException) {
+                CallToolResult(
+                    content = listOf(TextContent("Error: Tool execution timed out after ${DEFAULT_TOOL_TIMEOUT_MS / 1000}s")),
+                    isError = true
+                )
+            }
         }
     )
 }

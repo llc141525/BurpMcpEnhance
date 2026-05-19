@@ -59,12 +59,12 @@ class Exporter(
         scope.cancel()
     }
 
-    private suspend fun exportProxyHttpHistory() {
+    internal suspend fun exportProxyHttpHistory() {
         withContext(Dispatchers.IO) {
             val maxId = database.getMaxProxyHttpId()
             val history = api.proxy().history()
             val newEntries = if (maxId != null) {
-                history.dropWhile { it.time().toEpochSecond() < maxId.toLong() }
+                history.filter { it.time().toEpochSecond() > maxId }
             } else {
                 history
             }
@@ -79,7 +79,7 @@ class Exporter(
         }
     }
 
-    private suspend fun exportScannerIssues() {
+    internal suspend fun exportScannerIssues() {
         if (api.burpSuite().version().edition() != BurpSuiteEdition.PROFESSIONAL) return
         withContext(Dispatchers.IO) {
             val maxId = database.getMaxScannerIssueId()
@@ -87,7 +87,7 @@ class Exporter(
             val newIssues = if (maxId != null) {
                 issues.filter { it.name().hashCode() > maxId }
             } else {
-                issues.toList()
+                issues
             }
             if (newIssues.isEmpty()) return@withContext
             val entries = newIssues.mapNotNull { it.toScannerIssueEntry(maxBodySize) }
@@ -141,11 +141,14 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
 private fun AuditIssue.toScannerIssueEntry(maxBodySize: Int): ScannerIssueEntry? {
     return try {
         val reqRes = this.requestResponses().firstOrNull()
+        val issueUrl = reqRes?.request()?.url() ?: "unknown"
+        // Combine name + URL hash to reduce collision between same-named issues on different endpoints
+        val issueId = (this.name().hashCode() * 31 + issueUrl.hashCode()).coerceAtLeast(0)
         ScannerIssueEntry(
-            id = this.name().hashCode().coerceAtLeast(0),
+            id = issueId,
             name = this.name(),
             severity = this.severity().name,
-            url = reqRes?.request()?.url() ?: "unknown",
+            url = issueUrl,
             detail = reqRes?.request()?.body()?.toString()?.take(maxBodySize),
             remediation = this.remediation(),
             capturedAt = System.currentTimeMillis()

@@ -198,18 +198,10 @@ class KtorServerManager(private val api: MontoyaApi, private val dbPath: String 
         heartbeatJob = scope.launch {
             while (isActive) {
                 delay(config.keepaliveIntervalSec * 1000L)
-                try {
-                    // Keep SSE connection alive by making a self-request
-                    val url = URI("http://${config.host}:${config.port}/mcp").toURL()
-                    url.openConnection().apply {
-                        connectTimeout = 3000
-                        readTimeout = 3000
-                        setRequestProperty("User-Agent", "MCP-Keepalive/1.0")
-                    }.inputStream.readBytes()
-                    api.logging().logToOutput("MCP keepalive ping sent")
-                } catch (e: Exception) {
-                    api.logging().logToOutput("MCP keepalive ping failed: ${e.message}")
-                }
+                api.logging().logToOutput("MCP keepalive heartbeat")
+                // SSE keepalive is handled by Ktor server and MCP SDK at the transport level.
+                // This heartbeat ensures the server lifecycle coroutine stays active and provides
+                // visibility into server status through logs.
             }
         }
     }
