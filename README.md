@@ -8,32 +8,50 @@
 
 # Burp Suite MCP Server — Enhanced Edition
 
-A heavily enhanced fork of the official [PortSwigger mcp-server](https://github.com/PortSwigger/mcp-server) that solves the notorious **AI disconnection problem** once and for all.
+**Two core problems solved:** AI disconnection & Burp freezing under load.
 
-## Why This Fork Exists
+A heavily enhanced fork of the official [PortSwigger mcp-server](https://github.com/PortSwigger/mcp-server).
 
-The official MCP server uses **SSE (Server-Sent Events)** — a long-lived HTTP connection that constantly breaks:
+## The Two Problems This Fork Solves
+
+### 1. AI Keeps Disconnecting
+
+The official server uses **SSE (Server-Sent Events)** — a long-lived HTTP connection that drops constantly under load. Heartbeat self-requests time out. Slow tool calls block the event loop, killing the connection.
+
+**Solution — Streamable HTTP (MCP 2025-03-26):** Replaces persistent SSE with a single POST endpoint. Pure request-response. No long-lived connection means no disconnection.
+
+```
+Before: SSE ────── hold connection open ──────> drop ❌
+After:  POST ───> response ───> done ✓
+        POST ───> response ───> done ✓
+        POST ───> response ───> done ✓
+```
+
+### 2. Burp Freezes When Data Volume Is High
+
+The official server calls Burp API in real-time on every query. With thousands of proxy records (common during penetration testing), each query blocks Burp's event loop — Burp becomes unresponsive or crashes.
+
+**Solution — Decoupled Architecture:** A background exporter polls Burp API incrementally and writes to local SQLite. MCP tools read from the cache, not Burp directly. Query response drops from seconds to milliseconds.
+
+```
+Before: AI query ──> Burp API (real-time) ──> freeze ❌
+After:  AI query ──> SQLite cache ──> instant ✓
+                   ▲
+              Exporter (background, incremental sync)
+                   ▲
+              Burp API
+```
+
+### Full Problem Matrix
 
 | Problem | Root Cause | This Fork's Solution |
 |---------|-----------|---------------------|
-| **AI keeps disconnecting** | SSE connections drop under load. Heartbeat self-requests time out. Slow tool calls block the event loop. | **Streamable HTTP transport** (MCP 2025-03-26) — no persistent connections. Pure request-response. Never disconnects. |
-| **Slow queries freeze Burp** | Each query calls Burp API in real-time. Thousands of proxy records = deadlock. | SQLite local cache. Background exporter syncs data incrementally. Paginated queries respond in milliseconds. |
-| **Scanner issues invisible to AI** | No scanner issue query capability at all. | Full scanner issue sync + `list_scanner_issues` / `get_scanner_issue_detail` tools. |
-| **Large responses time out** | Huge HTTP bodies block the entire tool call. | Async task queue (`submit_task` / `get_task_result`) + file-based chunked reading. |
-| **WSL / remote unreachable** | Strict localhost host checking rejects non-local connections. | `strictLocalhost` toggle. Works in WSL, Docker, remote VMs. |
-| **Float-vs-int type mismatch** | AI sends `20.0` but the server expects `20`. | `normalizeJsonElement` auto-converts float integers. |
-
-### The Disconnection Crisis — Solved
-
-**Streamable HTTP** (MCP 2025-03-26) replaces SSE with a single POST endpoint. No long-lived connections means:
-
-- **No TCP timeouts** — every request opens a fresh connection
-- **No NAT/proxy drop** — no idle connection for NAT to kill
-- **No event-loop blocking** — tool execution and transport are cleanly separated
-- **No heartbeat needed** — connection lifecycle is per-request
-- **Works everywhere** — Claude Desktop, Cursor, any HTTP-capable MCP client
-
-### Beyond Connectivity: What Else You Get
+| **AI keeps disconnecting** | SSE long connection drops under load | **Streamable HTTP transport** — no persistent connections, pure request-response |
+| **Burp freezes on large data** | Real-time Burp API calls block the event loop | **Decoupled architecture** — local SQLite cache + background incremental exporter |
+| **Scanner issues invisible to AI** | No scanner issue query capability | Full scanner issue sync + query tools |
+| **Large responses time out** | Large HTTP bodies block the entire tool call | Async task queue + file-based chunked reading |
+| **WSL / remote unreachable** | Strict localhost host checking | `strictLocalhost` toggle for WSL, Docker, remote VMs |
+| **Float-vs-int type mismatch** | AI sends `20.0` but server expects `20` | `normalizeJsonElement` auto-converts float integers |
 
 #### SQLite Cache Layer
 - Proxy history and scanner issues cached locally
@@ -243,45 +261,50 @@ mcpTool<MyToolArgs>("tool description") {
 
 # Burp Suite MCP Server — 魔改增强版
 
-基于 PortSwigger 官方 [mcp-server](https://github.com/PortSwigger/mcp-server) 深度魔改，**彻底解决 AI 频繁断连**这一最大痛点。
+**解决两大核心问题：AI 频繁断连 & Burp 数据量一大就卡死。**
 
-## 为什么有这个分支
+基于 PortSwigger 官方 [mcp-server](https://github.com/PortSwigger/mcp-server) 深度魔改。
 
-原版 MCP 服务器使用 **SSE（Server-Sent Events）**——一种长连接协议，在网络不稳定时会反复断开：
+## 本版解决的两大问题
+
+### 1. AI 频繁断连
+
+原版服务器使用 **SSE（Server-Sent Events）**—— 一种长连接协议，负载高时反复断开。自请求心跳超时、慢工具调用阻塞事件循环，都会导致连接中断。
+
+**解决方案 — Streamable HTTP（MCP 2025-03-26 新标准）：** 用一个 POST 端点替代持久 SSE 连接。纯请求-响应模式，无长连接 = 永不掉线。
+
+```
+改造前： SSE ────── 保持连接打开 ──────> 断开 ❌
+改造后： POST ───> 响应 ───> 结束 ✓
+        POST ───> 响应 ───> 结束 ✓
+        POST ───> 响应 ───> 结束 ✓
+```
+
+### 2. Burp 数据量大就卡死
+
+原版每次查询都实时调用 Burp API。挖洞时 Burp 会记录成百上千条数据，每次查詢都阻塞 Burp 事件循环——Burp 直接卡死甚至崩溃。
+
+**解决方案 — 解耦架构：** 后台导出器轮询 Burp API，增量同步到本地 SQLite 数据库。MCP 工具从缓存读取，不直接调 Burp API。查询响应从秒级降到毫秒级。
+
+```
+改造前： AI 查询 ──> Burp API（实时）──> 卡死 ❌
+改造后： AI 查询 ──> SQLite 缓存 ──> 毫秒响应 ✓
+                   ▲
+              后台导出器（增量同步）
+                   ▲
+              Burp API
+```
+
+### 完整问题对照
 
 | 痛点 | 原版根因 | 本版改进 |
 |------|---------|---------|
-| **AI 频繁断连** | SSE 长连接在负载下断开。自请求心跳超时。慢工具调用阻塞事件循环导致心跳中断。 | **Streamable HTTP 传输**（MCP 2025-03-26 新标准）——纯请求-响应模式，无持久连接，永不掉线 |
-| **数据查询卡死 Burp** | 每次查询实时调用 Burp API，大量数据时崩溃 | SQLite 本地缓存 + 后台导出器增量同步，**分页查询毫秒响应** |
-| **扫描结果不可查** | 完全不支持扫描问题查询 | 全量扫描问题同步 + 专用查询工具 |
-| **大响应超时** | 查询结果过大直接超时 | **异步任务队列** + 文件分块读取 |
-| **WSL/远程不可用** | 严格的 localhost 检查 | **strictLocalhost 开关**，WSL/Docker/远程皆可用 |
-| **参数类型错误** | AI 发 `20.0` 但系统要 `20` | `normalizeJsonElement` 自动类型修正 |
-
-### 断连问题——彻底解决
-
-**Streamable HTTP**（MCP 2025-03-26 标准）用一个 POST 端点替代 SSE 持久连接：
-
-- **无 TCP 超时** — 每次请求都是新连接
-- **无中间层断连** — NAT/代理不会杀死空闲连接
-- **无事件循环阻塞** — 工具执行与传输层完全解耦
-- **无需心跳** — 连接生命周期就是一次请求
-- **广泛兼容** — Claude Desktop、Cursor 等主流 MCP 客户端均支持
-
-**配置方法**：只需将 `url` 指向 `http://127.0.0.1:9876/mcp` 即自动启用，无需额外设置。
-
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
-    }
-  }
-}
-```
-
-### 更多增强功能
+| **AI 频繁断连** | SSE 长连接负载下断开 | **Streamable HTTP** — 无持久连接，纯请求-响应 |
+| **数据量大卡死** | 实时调 Burp API 阻塞事件循环 | **解耦架构** — SQLite 本地缓存 + 后台增量导出 |
+| **扫描结果不可查** | 不支持扫描问题查询 | 全量扫描问题同步 + 查询工具 |
+| **大响应超时** | 结果过大直接超时 | 异步任务队列 + 文件分块读取 |
+| **WSL/远程不可用** | 严格 localhost 检查 | `strictLocalhost` 开关 |
+| **参数类型错误** | AI 发 `20.0` 但系统要 `20` | `normalizeJsonElement` 自动修正 |
 
 #### SQLite 缓存层
 - 代理 HTTP 历史 + 扫描问题自动缓存到本地 SQLite
