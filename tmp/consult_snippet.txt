@@ -1,0 +1,100 @@
+css-out-content">
+            <div class="css-maincontent" style="min-height: 461px;">
+                <div class="userindex-page">
+                    <div class="container">
+                        <div class="breadcrumb">
+                            <label>æçä½ç½®ï¼</label>
+                            <ol>
+                                <li><a href="/home">å­¦çä¸­å¿</a></li>
+<li><i class="icon icon-xiangyoujiantou"></i></li>
+<li class="active">å¨è¯¢é¢çº¦</li>                            </ol>
+                        </div>
+                        
+<div class="sidenav" id="Left">
+        <div class="panel">
+        <div class="panel-heading">æ±èä¸­å¿</div>
+        <ul>
+                                                <li class="">
+                        <a href="/resume/manage" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">æçç®å                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/careerLab" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">ç®åå®éªå®¤                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/jobcollect" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">èä½æ¶è                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/jobapply" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">èä½ç³è¯·                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/jobinvite" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">èä½éè¯·                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/calendar" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">æçæ¥å                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/Message" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">æçæ¨é                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/interview" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">æçé¢è¯                        </a>
+                    </li>
+                                    </ul>
+    </div>
+        <div class="panel">
+        <div class="panel-heading">å°±ä¸æç»­</div>
+        <ul>
+                                                <li class="">
+                        <a href="/affair/sinfo" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">çæºä¿¡æ¯æ ¸å¯¹                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/affair/jinfo" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">å°±ä¸æ¹æ¡ä¸æ¥                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/affair/internship" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">å°±ä¸ç«äºåæåå¹è®­è¡¥è´´ç³è¯·                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/affair/dealloss" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">åºå±å°åºå°±ä¸èµå©ç³è¯·                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/affair/stamp" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">åºå±åä½åå²ä½å°±ä¸èµå©ç³è¯·                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/affair/ledger" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">å°è´¦ç®¡ç                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/home/intention" target="_self">
+                            <img src="/static/electronic/i/public/bulkcontract-icon.png">å°±ä¸æåï¼å°è´¦ï¼                        </a>
+                    </li>
+                                    </ul>
+    </div>
+        <div class="panel">
+        <div class="panel-heading">å°±ä¸æå¡</div>
+        <ul>
+                                                <li class="">
+                        <a href="/jobtest" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">èä¸æµè¯                        </a>
+                    </li>
+                                    <li class="current">
+                        <a href="/consult" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">å¨è¯¢é¢çº¦                        </a>
+                    </li>
+                                    <li class="">
+                        <a href="/question" target="_self">
+                            <img src="/static/electronic/i/public/userinfo-icon.png">å°±ä¸é®ç­                        </a>
+                    </li>
+                                    <li class="">
+ 

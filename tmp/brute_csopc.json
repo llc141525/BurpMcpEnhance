@@ -1,0 +1,18 @@
+{
+  "target": "https://csopc.cargosmart.com",
+  "scanned": 200,
+  "found": 1,
+  "elapsed_seconds": 535.5,
+  "rate": "0.4/s",
+  "results": [
+    {
+      "url": "https://csopc.cargosmart.com/!.gitignore",
+      "path": "/!.gitignore",
+      "status": 200,
+      "length": 746,
+      "title": "Error",
+      "location": "",
+      "timestamp": "2026-05-27T01:33:21.461744+00:00"
+    }
+  ]
+}

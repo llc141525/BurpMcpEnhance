@@ -1,0 +1,9 @@
+.browser-profile/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.env
+reports/
+res/
+TOOLS/

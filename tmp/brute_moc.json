@@ -1,0 +1,18 @@
+{
+  "target": "https://moc.oocl.com",
+  "scanned": 200,
+  "found": 1,
+  "elapsed_seconds": 608.6,
+  "rate": "0.3/s",
+  "results": [
+    {
+      "url": "https://moc.oocl.com/!.gitignore",
+      "path": "/!.gitignore",
+      "status": 200,
+      "length": 1057,
+      "title": "Error",
+      "location": "",
+      "timestamp": "2026-05-27T01:35:21.551291+00:00"
+    }
+  ]
+}

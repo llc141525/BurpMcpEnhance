@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "second-opinion@trailofbits": true,
+    "variant-analysis@trailofbits": true,
+    "insecure-defaults@trailofbits": true,
+    "sharp-edges@trailofbits": true,
+    "frontend-design@claude-plugins-official": false,
+    "feature-dev@claude-plugins-official": false
+  }
+}

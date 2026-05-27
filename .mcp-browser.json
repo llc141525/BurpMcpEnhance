@@ -1,0 +1,19 @@
+{
+	"mcpServers": {
+		"stealth-browser": {
+			"command": "stealth-agent-browser-mcp",
+			"env": {
+				"SAB_HEADLESS": "false",
+				"SAB_STEALTH_LEVEL": "paranoid",
+				"SAB_HUMAN_MOUSE": "true",
+				"SAB_USER_DATA_DIR": "E:\\SRC挖掘\\SRC\\.browser-profile",
+				"SAB_PROXY_SERVER": "http://127.0.0.1:9870",
+				"SAB_VIEWPORT_W": "1366",
+				"SAB_VIEWPORT_H": "768",
+				"SAB_LOCALE": "zh-CN",
+				"SAB_TIMEZONE": "Asia/Shanghai",
+				"NO_PROXY": "registry.npmjs.org,unpkg.com,*.npmjs.org,github.com,*.github.com"
+			}
+		}
+	}
+}

@@ -1,0 +1,3 @@
+[FOFA] ≤È—Ø: domain="oocllogistics.com"
+[ERROR] FOFA «Î«Û ß∞‹ (page=1): 429 Client Error: Too Many Requests for url: https://fofa.info/api/v1/search/all?email=leilecen1%40gmail.com&key=1a42a6fb57f2bdbb1575e7e50a3b5d9d&qbase64=ZG9tYWluPSJvb2NsbG9naXN0aWNzLmNvbSI%3D&size=100&page=1&fields=ip%2Cport%2Cprotocol%2Chost%2Cdomain%2Ctitle%2Cserver%2Ccert%2Ccountry%2Ccity%2Cos%2Cicp&full=false
+{"query": "domain=\"oocllogistics.com\"", "count": 0, "results": []}

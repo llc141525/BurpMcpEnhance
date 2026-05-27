@@ -1,0 +1,9 @@
+{
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  },
+  "dependencies": {
+    "playwright": "^1.48.2",
+    "rebrowser-playwright": "^1.52.0"
+  }
+}

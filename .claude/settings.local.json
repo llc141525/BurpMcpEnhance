@@ -1,0 +1,112 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(nmap *)",
+      "Bash(nuclei *)",
+      "Bash(ffuf *)",
+      "Bash(sqlmap *)",
+      "Bash(whatweb *)",
+      "Bash(subfinder *)",
+      "Bash(httpx *)",
+      "Bash(go *)",
+      "Bash(git *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(echo *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(which *)",
+      "Bash(java *)",
+      "Bash(jadx *)",
+      "Bash(jadx-gui *)",
+      "Bash(dirsearch *)",
+      "Bash(gobuster *)",
+      "Bash(feroxbuster *)",
+      "Bash(dalfox *)",
+      "Bash(xsstrike *)",
+      "Bash(katana *)",
+      "Bash(naabu *)",
+      "Bash(waybackurls *)",
+      "Bash(gau *)",
+      "Bash(anew *)",
+      "Bash(unfurl *)",
+      "Bash(kxss *)",
+      "Bash(dnsx *)",
+      "Bash(shuffledns *)",
+      "Bash(hakrawler *)",
+      "Bash(gospider *)",
+      "WebSearch",
+      "mcp__burp__send_http1_request",
+      "mcp__burp__get_proxy_http_history",
+      "mcp__burp__get_scanner_issues",
+      "mcp__burp__get_proxy_websocket_history",
+      "mcp__chrome-devtools__list_pages",
+      "mcp__ide__getDiagnostics",
+      "Bash(tasklist)",
+      "mcp__burp__get_proxy_http_history_regex",
+      "mcp__burp__list_proxy_http_history",
+      "Skill(stealth-scanner)",
+      "mcp__chrome-devtools__select_page",
+      "mcp__burp__get_proxy_http_detail",
+      "mcp__chrome-devtools__new_page",
+      "mcp__chrome-devtools__take_snapshot",
+      "PowerShell(Switch-ClashProxy *)",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__evaluate_script",
+      "mcp__burp__create_repeater_tab",
+      "PowerShell(Enable-ClashProxyEnv *)",
+      "PowerShell(*Clash*)",
+      "Skill(update-config)",
+      "mcp__burp__exporter_stats",
+      "mcp__burp__list_scanner_issues",
+      "PowerShell(claude mcp *)",
+      "mcp__stealth-browser__*",
+      "mcp__minimax__*"
+    ],
+    "deny": []
+  },
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python E:/SRC挖掘/SRC/.claude/hooks/check-bash-command.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python E:/SRC挖掘/SRC/TOOLS/ad-hoc/session-summary.py"
+          }
+        ]
+      }
+    ]
+  },
+  "autoCompactWindow": 220000,
+  "autoCompactEnabled": true,
+  "enabledMcpjsonServers": [
+    "stealth-browser",
+    "burp",
+    "chrome-devtools",
+    "scrapling",
+    "MiniMax"
+  ]
+}

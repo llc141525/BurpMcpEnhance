@@ -1,0 +1,36 @@
+{
+  "target": "https://oworkmail.oocl.com",
+  "scanned": 200,
+  "found": 3,
+  "elapsed_seconds": 146.3,
+  "rate": "1.4/s",
+  "results": [
+    {
+      "url": "https://oworkmail.oocl.com/!.gitignore",
+      "path": "/!.gitignore",
+      "status": 302,
+      "length": 133,
+      "title": "Object moved",
+      "location": "/owa/!.gitignore",
+      "timestamp": "2026-05-27T01:38:22.765428+00:00"
+    },
+    {
+      "url": "https://oworkmail.oocl.com/!.htaccess",
+      "path": "/!.htaccess",
+      "status": 302,
+      "length": 132,
+      "title": "Object moved",
+      "location": "/owa/!.htaccess",
+      "timestamp": "2026-05-27T01:38:23.326129+00:00"
+    },
+    {
+      "url": "https://oworkmail.oocl.com/%2e%2e//google.com",
+      "path": "/%2e%2e//google.com",
+      "status": 403,
+      "length": 312,
+      "title": "Forbidden",
+      "location": "",
+      "timestamp": "2026-05-27T01:38:24.449220+00:00"
+    }
+  ]
+}

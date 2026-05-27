@@ -1,0 +1,18 @@
+{
+  "target": "https://commonframe-moc.digital.oocl.com",
+  "scanned": 200,
+  "found": 1,
+  "elapsed_seconds": 173.8,
+  "rate": "1.2/s",
+  "results": [
+    {
+      "url": "https://commonframe-moc.digital.oocl.com/%3f/",
+      "path": "/%3f/",
+      "status": 403,
+      "length": 146,
+      "title": "403 Forbidden",
+      "location": "",
+      "timestamp": "2026-05-27T01:38:28.246706+00:00"
+    }
+  ]
+}

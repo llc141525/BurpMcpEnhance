@@ -1,0 +1,150 @@
+{
+  "query": "domain=\"cargosmart.com\"",
+  "count": 16,
+  "results": [
+    {
+      "ip": "103.134.86.149",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://static.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.134.86.148",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://cs-captcha-public.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.18",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://www.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.18",
+      "port": "80",
+      "protocol": "http",
+      "host": "cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.18",
+      "port": "80",
+      "protocol": "http",
+      "host": "www.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.18",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "146.222.77.86",
+      "port": "443",
+      "protocol": "https",
+      "host": "mbpp.cargosmart.com:443",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.17.28.237",
+      "port": "9090",
+      "protocol": "http",
+      "host": "transfer-int-ssh.b2bi.cargosmart.com:9090",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.17.28.237",
+      "port": "9090",
+      "protocol": "http",
+      "host": "b2bi-transfer-int.cargosmart.com:9090",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.17.28.237",
+      "port": "9090",
+      "protocol": "http",
+      "host": "b2bi-int-as2.cargosmart.com:9090",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.14",
+      "port": "53",
+      "protocol": "http",
+      "host": "ns3.m.cargosmart.com:53",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.134.86.148",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://cs-captcha-beta-public.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.85",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://roboadvisor.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.24",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://csopc.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "103.134.86.154",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://omniocean.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    },
+    {
+      "ip": "203.99.143.24",
+      "port": "443",
+      "protocol": "https",
+      "host": "https://csopc.cargosmart.com",
+      "domain": "",
+      "title": "",
+      "server": ""
+    }
+  ]
+}
