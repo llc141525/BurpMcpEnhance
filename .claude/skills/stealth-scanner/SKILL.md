@@ -1,7 +1,7 @@
 ---
 name: stealth-scanner
 description: Scrapling + Burp 驱动的网站爬虫。BFS 遍历页面、收割端点、框架指纹识别、API 方法探测、参数 fuzz、表单交互、框架专项探测。写 SQLite，不验证漏洞。每 10 轮自动写入 memory 进度总结。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glob, Skill
+allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # stealth-scanner
@@ -128,7 +128,7 @@ VALUES ((SELECT id FROM targets WHERE target_name='{目标}'), '{seed_url}', 'au
 #### 1.2.1 检查已有会话
 
 ```sql
-SELECT token_name, token_value, domain FROM auth_sessions WHERE is_active=1;
+SELECT token_name, token_value, domain FROM auth_sessions WHERE is_active=1 AND (role='primary' OR role IS NULL);
 ```
 
 | auth_sessions | 动作 |
@@ -176,7 +176,7 @@ phase = 'brute':
 ### 2.0 会话有效性检查
 
 ```sql
-SELECT token_name, token_value FROM auth_sessions WHERE is_active=1 AND domain LIKE '%{domain}%';
+SELECT token_name, token_value FROM auth_sessions WHERE is_active=1 AND (role='primary' OR role IS NULL) AND domain LIKE '%{domain}%';
 ```
 
 需要但缺少 cookie → 提示操作员重新登录 via Burp，凭证写入后继续。
@@ -692,12 +692,6 @@ CREATE TABLE findings (
     burp_request_id INTEGER
 );
 ```
-
-## 协作
-
-- scanner 写入: `pages`, `js_files`, `suspicious_points` (test_status='untested')
-- vuln-review 读取上述表, 更新: `suspicious_points.test_status`, `findings`
-- WAL 模式 + busy_timeout=5000 处理并发
 
 ## 故障恢复
 

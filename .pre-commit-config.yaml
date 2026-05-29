@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.15
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^TOOLS/.*\.py$
+      - id: ruff-format
+        files: ^TOOLS/.*\.py$
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0  # 2026-05-29: v1.18.0 tag 不存在导致 checkout 失败
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports]
+        files: ^TOOLS/.*\.py$
+        exclude: ^TOOLS/ad-hoc/
