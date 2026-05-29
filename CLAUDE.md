@@ -54,8 +54,15 @@
 | `brutescan.py`       | 轻量目录爆破（200 条/轮，自动 Clash IP 轮换）                                     |
 | `clash-helper.ps1`   | Clash 代理切换（HK→JP→SG→TW→KR→MY 轮换）                                          |
 | `captcha_bypass.py`  | **验证码绕过**: OCR 图形验证码 + 滑块缺口检测 + 拟人轨迹生成（基于 ddddocr）      |
-| `fofa_query.py`      | **FOFA 被动侦察**: 资产发现 → pages 表 → 可一键种入 BFS 队列（需 F 币）           |
+| `fofa_relay.py`      | **FOFA 中转查询**: 通过代理 API 查询，无需 F 币，无需 cf_clearance                 |
 | `zoomeye_query.py`   | **ZoomEye 被动侦察**: 同上，免费 10000 条/月（env: ZOOMEYE_KEY）                  |
+| `variant_search.py`  | **变种搜索**: 从确认漏洞提取签名 → SQL 搜同类端点/参数 → 写入 suspicious_points   |
+| `migrate.py`         | **DB 迁移**: 按编号执行 `migrations/` 目录 SQL 文件，支持 --target / --status     |
+| `auth_check.py`      | **Session 健康检查**: 检查 auth_sessions 表中 token 有效性，支持 --update 回写 DB |
+| `db_backup.py`       | **DB 备份**: sqlite3 .backup 命令安全备份（WAL 兼容），支持 --keep 自动轮换       |
+| `session_dash.py`    | **Session 总览**: 读 scan_state + 各表计数，检测停滞 (>24h 无进展)，支持 --all    |
+| `log_utils.py`       | **日志 helper**: 结构化 JSON lines 日志，供其他 TOOLS opt-in 导入                  |
+| `log_view.py`        | **日志查询**: 按 today/errors/waf/target/tool 过滤 .session-log.jsonl               |
 
 ### 省 Token 策略 (MiniMax MCP + CLI)
 
@@ -97,9 +104,11 @@ mmx search query <关键词>   → 联网搜索
 | Skill | 用途 | 调用方式 |
 |-------|------|----------|
 | **asset-recon** | FOFA/ZoomEye 被动侦察，初始化目标 DB，写入 targets 表 | `Skill(skill="asset-recon", args="目标: 台州学院")` |
+| **business-logic-hunt** | Burp 历史 → 三层重放 → IDOR/未授权/信息泄露/验证码/枚举/密码重置/参数逻辑替换 | `Skill(skill="business-logic-hunt", args="目标: 台州学院")` |
 | **stealth-scanner** | BFS 爬虫 + 框架指纹 + API探测 + 参数fuzz + 框架专项探测 + 10轮记忆总结 | `Skill(skill="stealth-scanner", args="目标: 台州学院")` |
 | **vuln-review** | PoC 验证，结果写入 findings 表 | `Skill(skill="vuln-review", args="模式: 复核; 目标: 台州学院")` |
-| **src-report** | 读 findings 生成 edu/补天/CNVD 三平台报告 | `Skill(skill="src-report", args="平台: edu; 目标: 台州学院")` |
+| **src-report** | 读 findings 生成 edu/补天/CNVD 三平台 docx 报告，评审结论写 DB，已报告漏洞自动去重 | `Skill(skill="src-report", args="平台: edu; 目标: 台州学院")` |
+| **vuln-auditor** | 补天审核员视角复核 docx 报告，发 Burp 请求 / 运行 PoC 脚本，打回记录写 memory | `Skill(skill="vuln-auditor", args="目标: 台州学院")` |
 
 ## 并发三 Session 模型
 
@@ -143,6 +152,16 @@ mmx search query <关键词>   → 联网搜索
 - Scrapling 驱动页面抓取、框架指纹、JS 收割
 - Phase 3 攻击面探测：API 方法探测、参数 fuzz、表单交互、框架专项
 - 每 10 轮自动向 memory 系统写入进度总结
+
+### 2.5 业务逻辑猎手（business-logic-hunt）
+
+操作员调用 `Skill(skill="business-logic-hunt", args="目标: 台州学院")` 深度挖掘业务漏洞：
+- 读取 Burp 历史 → MiniMax 筛选业务接口
+- 三层重放测试（A 账号 / B 账号 / 未授权）
+- 确认漏洞直接写 findings 表（F-BLH-* 前缀）
+- 低置信度发现写 suspicious_points（SP-BLH-* 前缀）
+- 增量队列模式，每次调用处理 5 个端点
+- 需先在 auth_sessions 准备 primary + secondary 两个账号
 
 ### 3. 复核（vuln-review）
 
