@@ -105,6 +105,7 @@ mmx search query <关键词>   → 联网搜索
 |-------|------|----------|
 | **asset-recon** | FOFA/ZoomEye 被动侦察，初始化目标 DB，写入 targets 表 | `Skill(skill="asset-recon", args="目标: 台州学院")` |
 | **business-logic-hunt** | Burp 历史 → 三层重放 → IDOR/未授权/信息泄露/验证码/枚举/密码重置/参数逻辑替换 | `Skill(skill="business-logic-hunt", args="目标: 台州学院")` |
+| **manual-replay** | 操作员跑业务流程 → AI 变种攻击。时间窗口 Burp 采集 → mmx 分类 → 流分析 → 变种生成 → 三层执行 | `Skill(skill="manual-replay", args="目标: 台州学院; 模式: replay; 窗口: 5")` |
 | **stealth-scanner** | BFS 爬虫 + 框架指纹 + API探测 + 参数fuzz + 框架专项探测 + 10轮记忆总结 | `Skill(skill="stealth-scanner", args="目标: 台州学院")` |
 | **vuln-review** | PoC 验证，结果写入 findings 表 | `Skill(skill="vuln-review", args="模式: 复核; 目标: 台州学院")` |
 | **src-report** | 读 findings 生成 edu/补天/CNVD 三平台 docx 报告，评审结论写 DB，已报告漏洞自动去重 | `Skill(skill="src-report", args="平台: edu; 目标: 台州学院")` |
@@ -162,6 +163,21 @@ mmx search query <关键词>   → 联网搜索
 - 低置信度发现写 suspicious_points（SP-BLH-* 前缀）
 - 增量队列模式，每次调用处理 5 个端点
 - 需先在 auth_sessions 准备 primary + secondary 两个账号
+
+### 2.6 手工流程变种攻击（manual-replay）
+
+操作员调用 `Skill(skill="manual-replay", args="目标: 台州学院; 模式: replay")` 对刚手工操作的业务流程执行变种攻击：
+
+1. 操作员在 Burp 中跑完业务流程（注册→登录→下单等）
+2. 回到 Claude 调用 manual-replay skill
+3. 时间窗口采集 Burp 历史 → MiniMax 分类业务意图
+4. AI 识别流程步骤和跨请求参数依赖
+5. 按业务意图生成变种（IDOR/未授权/参数逻辑/验证码复用等）
+6. 三层执行（A 账号 / B 账号 / 未授权）
+7. 确认漏洞写 findings 表（F-RP-* 前缀），低置信度写 suspicious_points（SP-RP-* 前缀）
+8. 输出摘要后退出，增量模式每次重跑重新采集
+
+前置条件：auth_sessions 表中已有 primary + secondary 两个账号的 token。
 
 ### 3. 复核（vuln-review）
 
