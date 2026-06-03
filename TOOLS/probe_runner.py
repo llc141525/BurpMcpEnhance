@@ -1,0 +1,336 @@
+"""主动探测：参数 fuzz (arjun) + 框架专项 (nuclei) + API 方法探测 + 结果写 DB。
+
+用法:
+  # 参数 fuzz (arjun)
+  python3 TOOLS/probe_runner.py --target "目标名" --mode params --url "https://example.com/api"
+  python3 TOOLS/probe_runner.py --target "目标名" --mode params --batch 20
+
+  # nuclei 框架专项扫描
+  python3 TOOLS/probe_runner.py --target "目标名" --mode nuclei --url "https://example.com"
+  python3 TOOLS/probe_runner.py --target "目标名" --mode nuclei --tags "springboot,thinkphp"
+
+  # HTTP 方法探测
+  python3 TOOLS/probe_runner.py --target "目标名" --mode methods --url "https://example.com/api/v1"
+
+输出:
+  - 可疑发现写入 suspicious_points 表
+  - 打印摘要
+
+依赖:
+  - arjun: python3.14 -m arjun
+  - nuclei: nuclei (PATH)
+"""
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
+
+# nuclei tags 与框架指纹的映射
+FRAMEWORK_TAGS = {
+    "struts": "apache,struts",
+    "struts2": "apache,struts",
+    "thinkphp": "thinkphp",
+    "spring": "springboot,spring",
+    "springboot": "springboot",
+    "aspnet": "asp,aspx",
+    "viewstate": "asp,aspx",
+    "openresty": "nginx",
+    "jetty": "java",
+    "shiro": "shiro",
+    "fastjson": "fastjson",
+    "log4j": "log4j",
+}
+
+HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "HEAD", "TRACE"]
+
+
+def find_db(target: str) -> Path:
+    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not dbs:
+        sys.exit(f"[error] 找不到目标 DB: dbs/{target}*.db")
+    return dbs[0]
+
+
+def connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def next_sp_id(conn: sqlite3.Connection, prefix: str = "SP-PR") -> str:
+    rows = conn.execute(
+        f"SELECT id FROM suspicious_points WHERE id LIKE '{prefix}-%' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if rows:
+        try:
+            num = int(rows[0].split("-")[-1]) + 1
+        except ValueError:
+            num = 1
+    else:
+        num = 1
+    return f"{prefix}-{num:03d}"
+
+
+def write_sp(
+    conn: sqlite3.Connection,
+    url: str,
+    param: str,
+    method: str,
+    test_type: str,
+    evidence: str,
+    reasoning: str,
+    risk: str = "Medium",
+) -> str:
+    sp_id = next_sp_id(conn)
+    conn.execute(
+        """INSERT INTO suspicious_points
+           (id, url, param, method, test_type, evidence, source, reasoning, risk, test_status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'probe_runner', ?, ?, 'untested', ?)
+           ON CONFLICT(id) DO NOTHING""",
+        (sp_id, url, param, method, test_type, evidence, reasoning, risk, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    conn.commit()
+    return sp_id
+
+
+def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
+    """测试非标准 HTTP 方法，响应与 GET 差异时写 SP。"""
+    import urllib.request
+
+    proxies = {"http": proxy, "https": proxy} if proxy else {}
+    added = 0
+
+    for method in HTTP_METHODS:
+        try:
+            import urllib.error
+
+            req = urllib.request.Request(url, method=method)
+            req.add_header("User-Agent", "Mozilla/5.0")
+            ctx = None
+            if proxies:
+                import urllib.request as ur
+
+                handler = ur.ProxyHandler(proxies)
+                ctx = ur.build_opener(handler)
+            resp = ctx.open(req, timeout=10) if ctx else urllib.request.urlopen(req, timeout=10)  # type: ignore[arg-type]
+            code = resp.getcode()
+            size = len(resp.read())
+            if code in (200, 201, 204) or (method == "OPTIONS" and code == 200):
+                sp_id = write_sp(
+                    conn,
+                    url,
+                    method,
+                    method,
+                    "method_tampering",
+                    f"{method} → HTTP {code}, body_len={size}",
+                    f"{method} 返回 {code}，可能暴露未授权操作面",
+                )
+                print(f"  [+] {method} {url} → {code} ({sp_id})")
+                added += 1
+        except Exception as e:
+            if "403" in str(e) or "405" in str(e):
+                pass  # 正常拒绝
+            elif "404" not in str(e):
+                print(f"  [-] {method} {url} → {e}")
+    return added
+
+
+def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
+    """arjun 参数发现，写入发现的参数。"""
+    python_exe = "python3.14"
+    try:
+        subprocess.run([python_exe, "-m", "arjun", "--help"], capture_output=True, check=True, timeout=5)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        python_exe = sys.executable
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        out_file = f.name
+
+    cmd = [python_exe, "-m", "arjun", "-u", url, "-oJ", out_file, "-q"]
+    if proxy:
+        cmd += ["--headers", f"proxy: {proxy}"]
+
+    print(f"[arjun] {url}")
+    try:
+        subprocess.run(cmd, check=False, timeout=120, capture_output=True)
+    except subprocess.TimeoutExpired:
+        print("[warn] arjun 超时")
+
+    added = 0
+    if os.path.exists(out_file):
+        try:
+            with open(out_file) as f:
+                data = json.load(f)
+            params = data.get("params", []) if isinstance(data, dict) else data
+            if params:
+                sp_id = write_sp(
+                    conn,
+                    url,
+                    ", ".join(params),
+                    "GET",
+                    "parameter_fuzz",
+                    f"arjun 发现参数: {params}",
+                    "端点存在隐藏参数，可能影响访问控制或业务逻辑",
+                )
+                print(f"  [+] 发现参数 {params} ({sp_id})")
+                added += 1
+        except Exception as e:
+            print(f"  [warn] 解析 arjun 输出失败: {e}")
+        os.unlink(out_file)
+
+    return added
+
+
+def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
+    """nuclei 扫描，发现写 SP。"""
+    if not shutil.which("nuclei"):
+        sys.exit("[error] nuclei 未安装")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        out_file = f.name
+
+    # 如果没有指定 tags，用通用模板
+    tag_arg = tags or "exposure,misconfiguration,default-login,tech"
+    cmd = [
+        "nuclei",
+        "-u",
+        url,
+        "-tags",
+        tag_arg,
+        "-severity",
+        "medium,high,critical",
+        "-json-export",
+        out_file,
+        "-silent",
+        "-timeout",
+        "10",
+        "-c",
+        "5",
+    ]
+    print(f"[nuclei] {url} (tags={tag_arg})")
+    try:
+        subprocess.run(cmd, check=False, timeout=180)
+    except subprocess.TimeoutExpired:
+        print("[warn] nuclei 超时")
+
+    added = 0
+    if os.path.exists(out_file):
+        with open(out_file, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    finding = json.loads(line)
+                    matched_url = finding.get("matched-at", url)
+                    template_id = finding.get("template-id", "unknown")
+                    severity = finding.get("info", {}).get("severity", "medium").title()
+                    name = finding.get("info", {}).get("name", template_id)
+                    evidence = finding.get("extracted-results", [])
+                    evidence_str = f"nuclei/{template_id}: {name}" + (f" — {evidence[:3]}" if evidence else "")
+                    risk_map = {"Critical": "Critical", "High": "High", "Medium": "Medium"}
+                    risk = risk_map.get(severity, "Medium")
+                    sp_id = write_sp(
+                        conn,
+                        matched_url,
+                        "",
+                        "GET",
+                        "framework_probe",
+                        evidence_str,
+                        f"nuclei 模板 {template_id} 命中",
+                        risk,
+                    )
+                    print(f"  [+] {severity} {template_id} @ {matched_url} ({sp_id})")
+                    added += 1
+                except json.JSONDecodeError:
+                    pass
+        os.unlink(out_file)
+
+    return added
+
+
+def batch_params(conn: sqlite3.Connection, limit: int, proxy: str | None) -> int:
+    rows = conn.execute(
+        """SELECT url FROM pages
+           WHERE status='visited'
+           AND url LIKE '%?%'
+           AND url NOT IN (
+               SELECT DISTINCT url FROM suspicious_points WHERE source='probe_runner'
+           )
+           ORDER BY id LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    added = 0
+    for row in rows:
+        added += mode_params(row["url"], conn, proxy)
+    return added
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="主动探测: params | nuclei | methods")
+    parser.add_argument("--target", required=True, help="目标名")
+    parser.add_argument("--mode", required=True, choices=["params", "nuclei", "methods"], help="探测模式")
+    parser.add_argument("--url", help="目标 URL（单个）")
+    parser.add_argument("--batch", type=int, default=0, help="批量处理 N 个 URL（params 模式）")
+    parser.add_argument("--tags", help="nuclei tags，逗号分隔")
+    parser.add_argument("--proxy", default="http://127.0.0.1:8080", help="HTTP 代理")
+    args = parser.parse_args()
+
+    db_path = find_db(args.target)
+    conn = connect(db_path)
+    total_added = 0
+
+    if args.mode == "params":
+        if args.batch:
+            total_added = batch_params(conn, args.batch, args.proxy)
+        elif args.url:
+            total_added = mode_params(args.url, conn, args.proxy)
+        else:
+            sys.exit("[error] params 模式需要 --url 或 --batch")
+
+    elif args.mode == "nuclei":
+        url = args.url
+        if not url:
+            rows = conn.execute("SELECT seed_url FROM scan_state WHERE id=1").fetchone()
+            if not rows:
+                sys.exit("[error] nuclei 模式需要 --url 或 DB 中有 seed_url")
+            url = rows["seed_url"]
+        tags = args.tags
+        if not tags:
+            rows = conn.execute(
+                """SELECT evidence FROM suspicious_points
+                   WHERE test_type='framework_fingerprint' LIMIT 5"""
+            ).fetchall()
+            if rows:
+                detected = " ".join(r["evidence"] or "" for r in rows).lower()
+                tag_parts: list[str] = []
+                for fw, tag in FRAMEWORK_TAGS.items():
+                    if fw in detected:
+                        tag_parts.append(tag)
+                tags = ",".join(set(tag_parts)) if tag_parts else None
+        total_added = mode_nuclei(url, conn, tags)
+
+    elif args.mode == "methods":
+        if not args.url:
+            sys.exit("[error] methods 模式需要 --url")
+        total_added = mode_methods(args.url, conn, args.proxy)
+
+    conn.close()
+    print(f"\n=== probe_runner ({args.mode}) ===")
+    print(f"新增 suspicious_points: {total_added} 条")
+    print(f"DB: {db_path.name}")
+
+
+if __name__ == "__main__":
+    main()

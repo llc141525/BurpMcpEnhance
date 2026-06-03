@@ -15,6 +15,9 @@ select = ["E", "F", "I", "B", "S"]
 "TOOLS/waf_rotate.py" = ["S105", "S311", "S501"]
 "TOOLS/db_backup.py" = ["S603", "S607"]
 "TOOLS/session_dash.py" = ["S608"]
+"TOOLS/init_scan.py" = ["S603", "S607"]
+"TOOLS/bfs_crawl.py" = ["S603", "S607"]
+"TOOLS/probe_runner.py" = ["S603", "S607", "S608", "S310"]
 
 [tool.ruff.format]
 quote-style = "double"
