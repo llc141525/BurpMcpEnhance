@@ -1,0 +1,4 @@
+-- 001: 初始 schema
+-- 包含 targets, scan_state, pages, js_files, suspicious_points,
+--     findings, auth_credentials, auth_flow_steps, auth_sessions
+-- 旧 DB 若 tables 存在则跳过；新 DB 走 schema.sql，此迁移仅作版本标记。

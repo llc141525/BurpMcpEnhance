@@ -6,4 +6,10 @@ __pycache__/
 .env
 reports/
 res/
-TOOLS/
+TOOLS/android/
+TOOLS/__pycache__/
+tmp/
+dbs/
+.session-log.jsonl
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock

@@ -54,7 +54,7 @@
 | `brutescan.py`       | 轻量目录爆破（200 条/轮，自动 Clash IP 轮换）                                     |
 | `clash-helper.ps1`   | Clash 代理切换（HK→JP→SG→TW→KR→MY 轮换）                                          |
 | `captcha_bypass.py`  | **验证码绕过**: OCR 图形验证码 + 滑块缺口检测 + 拟人轨迹生成（基于 ddddocr）      |
-| `fofa_relay.py`      | **FOFA 中转查询**: 通过代理 API 查询，无需 F 币，无需 cf_clearance                 |
+| `fofa_relay.py`      | **FOFA 中转查询**: 通过代理 API 查询，无需 F 币（env: FOFA_RELAY_KEY）              |
 | `zoomeye_query.py`   | **ZoomEye 被动侦察**: 同上，免费 10000 条/月（env: ZOOMEYE_KEY）                  |
 | `variant_search.py`  | **变种搜索**: 从确认漏洞提取签名 → SQL 搜同类端点/参数 → 写入 suspicious_points   |
 | `migrate.py`         | **DB 迁移**: 按编号执行 `migrations/` 目录 SQL 文件，支持 --target / --status     |

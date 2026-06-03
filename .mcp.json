@@ -2,7 +2,11 @@
 	"mcpServers": {
 		"burp": {
 			"type": "http",
-			"url": "http://127.0.0.1:9876/mcp"
+			"url": "http://127.0.0.1:9876/mcp",
+			"env": {
+				"NO_PROXY": "127.0.0.1,localhost",
+				"no_proxy": "127.0.0.1,localhost"
+			}
 		},
 		"sqlite": {
 			"command": "python",

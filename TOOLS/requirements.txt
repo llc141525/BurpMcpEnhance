@@ -1,0 +1,4 @@
+scrapling
+ddddocr
+requests>=2.34
+urllib3>=2.7
