@@ -105,29 +105,29 @@ def run_httpx(urls: list[str]) -> list[dict]:
     return results
 
 
+def _strip_scheme(url: str) -> str:
+    return url.replace("https://", "").replace("http://", "").rstrip("/")
+
+
 def update_target(conn: sqlite3.Connection, result: dict) -> None:
     url = result.get("url", result.get("input", ""))
     status_code = result.get("status_code", 0)
     title = result.get("title", "")
     ip = result.get("host", "")
-    server = result.get("webserver", "")
     tech_list: list = result.get("tech", []) or []
     tech_stack = ", ".join(tech_list) if tech_list else ""
 
-    conn.execute(
-        """UPDATE targets
-           SET tech_stack=?, title=?, ip=?, server=?
-           WHERE domain=? OR domain=?""",
-        (
-            tech_stack,
-            title,
-            ip,
-            server,
-            url,
-            url.replace("https://", "").replace("http://", "").rstrip("/"),
-        ),
-    )
+    # targets schema: id, target_name, domain, ip, tech_stack, requires_auth, auth_status, discovered_at, notes
+    # match on full URL OR bare hostname (domain may be stored either way)
+    hostname = _strip_scheme(url)
+    rows_updated = conn.execute(
+        "UPDATE targets SET tech_stack=?, ip=? WHERE domain=? OR domain=?",
+        (tech_stack, ip, url, hostname),
+    ).rowcount
     conn.commit()
+
+    if rows_updated == 0:
+        print(f"  [warn] targets 中未找到匹配域名: {hostname}（跳过更新）")
 
     needs_login = bool(LOGIN_KEYWORDS.search(title or "") or LOGIN_KEYWORDS.search(url or ""))
     if needs_login:

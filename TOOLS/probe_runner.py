@@ -70,7 +70,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 def next_sp_id(conn: sqlite3.Connection, prefix: str = "SP-PR") -> str:
     rows = conn.execute(
-        f"SELECT id FROM suspicious_points WHERE id LIKE '{prefix}-%' ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM suspicious_points WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
+        (f"{prefix}-%",),
     ).fetchone()
     if rows:
         try:
@@ -158,12 +159,15 @@ def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
         out_file = f.name
 
     cmd = [python_exe, "-m", "arjun", "-u", url, "-oJ", out_file, "-q"]
+
+    env = os.environ.copy()
     if proxy:
-        cmd += ["--headers", f"proxy: {proxy}"]
+        env["HTTP_PROXY"] = proxy
+        env["HTTPS_PROXY"] = proxy
 
     print(f"[arjun] {url}")
     try:
-        subprocess.run(cmd, check=False, timeout=120, capture_output=True)
+        subprocess.run(cmd, check=False, timeout=120, capture_output=True, env=env)
     except subprocess.TimeoutExpired:
         print("[warn] arjun 超时")
 
@@ -284,7 +288,7 @@ def main() -> None:
     parser.add_argument("--url", help="目标 URL（单个）")
     parser.add_argument("--batch", type=int, default=0, help="批量处理 N 个 URL（params 模式）")
     parser.add_argument("--tags", help="nuclei tags，逗号分隔")
-    parser.add_argument("--proxy", default="http://127.0.0.1:8080", help="HTTP 代理")
+    parser.add_argument("--proxy", default=None, help="HTTP 代理（默认不使用，例: http://127.0.0.1:8080）")
     args = parser.parse_args()
 
     db_path = find_db(args.target)

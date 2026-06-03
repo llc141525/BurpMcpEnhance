@@ -54,7 +54,7 @@ def get_seed_urls(conn: sqlite3.Connection) -> list[str]:
         rows = conn.execute("SELECT domain FROM targets WHERE domain IS NOT NULL AND domain != ''").fetchall()
         seeds = []
         for r in rows:
-            d = r[0].strip()
+            d = r["domain"].strip()
             if not d.startswith("http"):
                 d = "https://" + d
             seeds.append(d)
@@ -120,7 +120,7 @@ def run_katana(seed_urls: list[str], depth: int, max_pages: int) -> list[str]:
         with open(out_file, encoding="utf-8", errors="ignore") as f:
             for line in f:
                 u = line.strip()
-                if u:
+                if u and (u.startswith("http://") or u.startswith("https://")):
                     urls.append(u)
         os.unlink(out_file)
 
