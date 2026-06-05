@@ -9,7 +9,7 @@
   - scan_state.phase 更新为 'auth_ready'（成功）或 'auth_timeout'（超时）
 
 环境变量:
-  ANTHROPIC_API_KEY   Claude Haiku API key（必填）
+  DEEPSEEK_API        DeepSeek API key（必填）
   FEISHU_CHAT_ID      飞书 chat_id（必填）
   CAIDO_PORT          Caido 代理端口（默认 8181）
 
@@ -134,8 +134,9 @@ async def run_browser_auth(target: str, login_url: str, cdp_url: str, db_path: s
         return False
 
     llm = ChatAnthropic(
-        model="claude-haiku-4-5-20251001",
-        api_key=os.environ["ANTHROPIC_API_KEY"],
+        model="deepseek-v4-flash",
+        api_key=os.environ["DEEPSEEK_API"],
+        base_url="https://api.deepseek.com/anthropic",
         timeout=60,
     )
 
@@ -234,8 +235,8 @@ def main() -> None:
     parser.add_argument("--url", required=True, help="登录页 URL")
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("[error] 请设置环境变量 ANTHROPIC_API_KEY")
+    if not os.environ.get("DEEPSEEK_API"):
+        sys.exit("[error] 请设置环境变量 DEEPSEEK_API")
     if not os.environ.get("FEISHU_CHAT_ID"):
         sys.exit("[error] 请设置环境变量 FEISHU_CHAT_ID")
 
