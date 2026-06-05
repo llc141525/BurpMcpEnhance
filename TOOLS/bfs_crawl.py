@@ -163,7 +163,25 @@ def main() -> None:
     parser.add_argument("--url", help="覆盖种子 URL（默认从 DB 读取）")
     parser.add_argument("--depth", type=int, default=3, help="爬取深度 (默认 3)")
     parser.add_argument("--max-pages", type=int, default=500, help="最大页面数 (默认 500)")
+    parser.add_argument("--no-chrome", action="store_true", help="跳过 Chrome 单实例启动")
     args = parser.parse_args()
+
+    # ── 启动/确认 Chrome 单实例 ────────────────────────────────────────
+    if not args.no_chrome:
+        try:
+            result = subprocess.run(  # noqa: S603
+                [sys.executable, str(Path(__file__).parent / "chrome_manager.py"), "--target", args.target],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if result.returncode != 0:
+                print(f"[warn] chrome_manager 失败，继续不带 CDP: {result.stderr.strip()}")
+            else:
+                print(f"[chrome] {result.stdout.strip()}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] chrome_manager 异常: {e}")
+    # ─────────────────────────────────────────────────────────────────
 
     db_path = find_db(args.target)
     conn = connect(db_path)
