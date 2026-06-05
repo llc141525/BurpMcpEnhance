@@ -27,6 +27,11 @@ from pathlib import Path
 DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
 
 LOGIN_KEYWORDS = re.compile(r"(login|signin|sign-in|auth|passport|sso|oauth|账号|登录|验证|portal)", re.IGNORECASE)
+AUTH_STATUS_CODES = {302, 401, 403}
+AUTH_KEYWORDS = re.compile(
+    r"(login|signin|sign-in|auth|passport|sso|oauth|账号|登录|验证|portal|请先登录|会话过期)",
+    re.IGNORECASE,
+)
 
 
 def find_db(target: str) -> Path:
@@ -109,7 +114,7 @@ def _strip_scheme(url: str) -> str:
     return url.replace("https://", "").replace("http://", "").rstrip("/")
 
 
-def update_target(conn: sqlite3.Connection, result: dict) -> None:
+def update_target(conn: sqlite3.Connection, result: dict) -> dict:
     url = result.get("url", result.get("input", ""))
     status_code = result.get("status_code", 0)
     title = result.get("title", "")
@@ -133,12 +138,22 @@ def update_target(conn: sqlite3.Connection, result: dict) -> None:
     if needs_login:
         print(f"  [!] 疑似登录页: {url} — {title}")
 
+    needs_auth = (
+        status_code in AUTH_STATUS_CODES
+        or bool(AUTH_KEYWORDS.search(title or ""))
+        or bool(AUTH_KEYWORDS.search(url or ""))
+    )
+    if needs_auth:
+        print(f"  [!] 疑似需要认证: {url} (HTTP {status_code}) — {title}")
+
     if status_code in (200, 301, 302, 403):
         conn.execute(
             "INSERT INTO pages (url, depth, status) VALUES (?, 0, 'queued') ON CONFLICT(url) DO NOTHING",
             (url,),
         )
         conn.commit()
+
+    return {"url": url, "needs_auth": needs_auth, "status_code": status_code}
 
 
 def print_summary(results: list[dict]) -> None:
@@ -179,15 +194,49 @@ def main() -> None:
 
     results = run_httpx(urls)
 
+    auth_targets: list[dict] = []
     if args.target:
         db_path = find_db(args.target)
         conn = connect(db_path)
         for r in results:
-            update_target(conn, r)
+            info = update_target(conn, r)
+            if info["needs_auth"]:
+                auth_targets.append(info)
         conn.close()
         print(f"[db] 已更新 targets 表，DB: {db_path.name}")
 
     print_summary(results)
+
+    # ── auth 检测：触发 browser_auth ──────────────────────────────────
+    if auth_targets and args.target:
+        db_path_str = str(find_db(args.target))
+        conn2 = sqlite3.connect(db_path_str)
+        conn2.execute("UPDATE scan_state SET phase='auth_pending' WHERE id=1")
+        conn2.commit()
+        conn2.close()
+
+        login_url = auth_targets[0]["url"]
+        print(f"\n[auth] 检测到认证壁垒，启动 browser_auth: {login_url}")
+
+        subprocess.run(  # noqa: S603
+            [sys.executable, str(Path(__file__).parent / "chrome_manager.py"), "--target", args.target],
+            timeout=20,
+            check=False,
+        )
+
+        subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(Path(__file__).parent / "browser_auth.py"),
+                "--target",
+                args.target,
+                "--url",
+                login_url,
+            ],
+            timeout=360,
+            check=False,
+        )
+    # ─────────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
