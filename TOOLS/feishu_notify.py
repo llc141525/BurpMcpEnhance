@@ -1,5 +1,8 @@
 """飞书通知 + 回复轮询：lark-cli 封装。
 
+发送: bot 身份（手机会收到推送）
+轮询回复: user 身份（有权限读群消息）
+
 用法（Python import）:
   from TOOLS.feishu_notify import send_image, send_image_wait_reply, send_text_wait_reply
 
@@ -14,8 +17,6 @@ CLI 用法（直接调用）:
 
 环境变量:
   FEISHU_CHAT_ID   默认 chat_id（可被 --chat-id 覆盖）
-
-⚠️ lark-cli 子命令语法对照 https://github.com/larksuite/cli/blob/main/README.zh.md
 """
 
 import argparse
@@ -24,112 +25,64 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 POLL_INTERVAL = 3  # seconds
 POLL_TIMEOUT = 180  # seconds (3 minutes)
 
+# Windows npm 安装的 CLI 是 .cmd 文件
+_LARK_BIN = "lark-cli.cmd" if sys.platform == "win32" else "lark-cli"
 
-def _run_lark(args: list[str]) -> str:
+
+def _run_lark(args: list[str], cwd: str | None = None) -> dict:
+    """调用 lark-cli，返回解析后的 JSON dict。失败返回 {}。"""
     result = subprocess.run(  # noqa: S603
-        ["lark"] + args, capture_output=True, text=True, check=True
+        [_LARK_BIN] + args,
+        capture_output=True,
+        encoding="utf-8",
+        cwd=cwd,
     )
-    return result.stdout.strip()
+    raw = result.stdout.strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
 
 
 def _lark_send_text(chat_id: str, text: str) -> None:
-    # ⚠️ 验证命令语法，参照 lark-cli README
-    _run_lark(
-        [
-            "im",
-            "message",
-            "create",
-            "--receive-id-type",
-            "chat_id",
-            "--receive-id",
-            chat_id,
-            "--msg-type",
-            "text",
-            "--content",
-            json.dumps({"text": text}),
-        ]
-    )
+    """用 bot 身份发文字消息（手机有推送）。"""
+    _run_lark(["im", "+messages-send", "--chat-id", chat_id, "--text", text, "--as", "bot"])
 
 
 def _lark_send_image(chat_id: str, image_path: str, text: str) -> None:
-    # Step 1: 上传图片获取 image_key
-    # ⚠️ 验证命令语法，参照 lark-cli README
-    upload_out = _run_lark(
-        [
-            "im",
-            "image",
-            "create",
-            "--image-type",
-            "message",
-            "--image",
-            image_path,
-        ]
-    )
-    image_key = json.loads(upload_out).get("image_key", "")
-
-    # Step 2: 发送图片消息
+    """用 bot 身份发图片，再发文字说明。"""
+    image_abs = Path(image_path).resolve()
     _run_lark(
-        [
-            "im",
-            "message",
-            "create",
-            "--receive-id-type",
-            "chat_id",
-            "--receive-id",
-            chat_id,
-            "--msg-type",
-            "image",
-            "--content",
-            json.dumps({"image_key": image_key}),
-        ]
+        ["im", "+messages-send", "--chat-id", chat_id, "--image", image_abs.name, "--as", "bot"],
+        cwd=str(image_abs.parent),
     )
-
-    # Step 3: 发送说明文字
     if text:
         _lark_send_text(chat_id, text)
 
 
 def _lark_get_messages(chat_id: str) -> list[dict]:
-    # ⚠️ 验证命令语法，参照 lark-cli README
-    out = _run_lark(
-        [
-            "im",
-            "message",
-            "list",
-            "--container-id-type",
-            "chat",
-            "--container-id",
-            chat_id,
-            "--sort-type",
-            "ByCreateTimeDesc",
-            "--page-size",
-            "10",
-        ]
-    )
-    data = json.loads(out) if out else {}
-    return data.get("items", [])
+    """用 user 身份拉群消息列表（bot 无读权限）。"""
+    data = _run_lark(["im", "+chat-messages-list", "--chat-id", chat_id])
+    return data.get("data", {}).get("messages", [])
 
 
 def _poll_for_reply(chat_id: str, timeout: int = POLL_TIMEOUT) -> str | None:
-    """轮询 chat 消息，直到出现新消息，返回消息文本。超时返回 None。"""
-    baseline = _lark_get_messages(chat_id)
-    baseline_ids = {m.get("message_id") for m in baseline}
+    """轮询直到出现新消息，返回消息文本。超时返回 None。"""
+    baseline_ids = {m.get("message_id") for m in _lark_get_messages(chat_id)}
 
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(POLL_INTERVAL)
-        msgs = _lark_get_messages(chat_id)
-        for m in msgs:
+        for m in _lark_get_messages(chat_id):
             if m.get("message_id") not in baseline_ids:
-                try:
-                    content = json.loads(m.get("body", {}).get("content", "{}"))
-                    return content.get("text", "").strip()
-                except (json.JSONDecodeError, AttributeError):
-                    return str(m.get("body", {}).get("content", "")).strip()
+                return m.get("content", "").strip()
     return None
 
 
