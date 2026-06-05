@@ -1,7 +1,7 @@
 ---
 name: stealth-scanner
 description: 网站爬虫与主动探测。BFS 发现页面/JS/端点（katana+httpx），框架指纹+参数fuzz+框架专项（nuclei+arjun）。机械动作全部由脚本完成，AI 只做分析判断。写 SQLite，不验证漏洞。每 10 轮写入 memory 进度总结。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glob
+allowed-tools: mcp__burp__*, mcp__MiniMax__*, mcp__caido__*, Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # stealth-scanner
@@ -32,6 +32,9 @@ allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glo
 | HTTP 方法探测 | `python3 TOOLS/probe_runner.py --target "{目标}" --mode methods --url "{url}"` |
 | 单页深度分析 | `python3 TOOLS/scrapling_fetch.py "{url}" --extract-all` |
 | 目录爆破 | `python3 TOOLS/brutescan.py -u {url} -n 200` |
+| Chrome 单实例启动 | `python3 TOOLS/chrome_manager.py --target "{目标}"` |
+| 自动登录 + surface discovery | `python3 TOOLS/browser_auth.py --target "{目标}" --url "https://..."` |
+| 飞书通知（内部） | 由 browser_auth.py 内部调用 |
 
 ## DB 操作
 
@@ -80,6 +83,8 @@ phases: `init` → `auth_pending` → `auth_ready` → `spider` ↔ `probe` → 
 | `spider` | BFS 爬取 + 框架指纹 | bfs_crawl.py + init_scan.py |
 | `probe` | 业务主动探测 | probe_runner.py |
 | `brute` | 目录爆破 | brutescan.py |
+| `auth_timeout` | 飞书等待超时（3分钟无回复），跳过该目标 | — |
+| `chrome_error` | Chrome 启动失败（:9222 15秒无响应），通知操作员 | — |
 
 ## Phase 1: 初始化
 
@@ -236,9 +241,19 @@ UPDATE js_files SET analyzed=1, discovered_apis_json='{MiniMax输出}', hardcode
 
 发现的路径级端点入 pages 队列。
 
-### 2.5 会话过期检测
+### 2.5 Auth 处理
 
-响应 302/401 或内容含登录页特征 → 提示操作员重新登录 via Burp。
+init_scan 检测到 302/401/403 或含登录关键词的页面时自动触发：
+
+1. 写 `scan_state.phase='auth_pending'`
+2. `chrome_manager.py` 确保 Chrome 在 `:9222` 在线（不重复启动）
+3. `browser_auth.py` 启动 browser-use agent（Claude Haiku），导航登录页
+4. 遇到 QR/CAPTCHA/OTP → `feishu_notify.py` 发飞书消息/截图给操作员手机
+5. 操作员在手机飞书回复验证码/确认扫码完成
+6. agent 填入答案 → 完成登录
+7. 提取 cookies → 写 `auth_sessions`（`cookie_source='browser_use'`）
+8. Surface discovery：展开菜单、导航页 → 发现 URL 写 `pages`（`source='browser_use'`）
+9. 写 `scan_state.phase='auth_ready'` → BFS spider 继续使用认证后 cookies
 
 ## Phase 3: 业务主动探测
 
@@ -471,7 +486,8 @@ CREATE TABLE scan_state (
     total_js INTEGER DEFAULT 0,
     total_suspicious INTEGER DEFAULT 0,
     total_findings INTEGER DEFAULT 0,
-    call_count INTEGER DEFAULT 0
+    call_count INTEGER DEFAULT 0,
+    cdp_url TEXT DEFAULT NULL
 );
 ```
 
