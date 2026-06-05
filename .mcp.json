@@ -35,9 +35,9 @@
 				"mcp"
 			]
 		},
-		"stealth-browser": {
+		"caido": {
 			"type": "http",
-			"url": "http://127.0.0.1:9878/mcp"
+			"url": "TODO_CAIDO_MCP_URL_AFTER_INSTALL"
 		}
 	}
 }
