@@ -46,13 +46,22 @@ def is_chrome_running(port: int = 9222) -> bool:
         return False
 
 
+def is_caido_running(port: int = 8181) -> bool:
+    try:
+        requests.get(f"http://127.0.0.1:{port}", timeout=2)
+        return True
+    except requests.exceptions.ConnectionError:
+        return False
+    except Exception:
+        return True  # 有响应（即使非 200）说明端口在监听
+
+
 def launch_chrome(port: int = 9222, caido_port: int = 8181) -> subprocess.Popen:
     chrome = find_chrome_executable()
     BROWSER_PROFILE.mkdir(exist_ok=True)
     cmd = [
         chrome,
         f"--remote-debugging-port={port}",
-        f"--proxy-server=http://127.0.0.1:{caido_port}",
         f"--user-data-dir={BROWSER_PROFILE}",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
@@ -60,6 +69,11 @@ def launch_chrome(port: int = 9222, caido_port: int = 8181) -> subprocess.Popen:
         "--lang=zh-CN",
         "--window-position=1400,0",
     ]
+    if is_caido_running(caido_port):
+        cmd.append(f"--proxy-server=http://127.0.0.1:{caido_port}")
+        print(f"[chrome] Caido 在线，启用代理 :{caido_port}", file=sys.stderr)
+    else:
+        print(f"[chrome] Caido 未运行（:{caido_port}），直连启动（无代理）", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
 
 
@@ -78,21 +92,25 @@ def find_db(target: str) -> str | None:
 
 
 def write_cdp_url_to_db(db_path: str, cdp_url: str) -> None:
+    if not db_path:
+        return
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("UPDATE scan_state SET cdp_url=? WHERE id=1", (cdp_url,))
-    conn.commit()
+    # migration 008 可能未跑，列不存在时跳过
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(scan_state)")}
+    if "cdp_url" in cols:
+        conn.execute("UPDATE scan_state SET cdp_url=? WHERE id=1", (cdp_url,))
+        conn.commit()
     conn.close()
 
 
 def ensure_chrome(target: str, port: int = 9222, caido_port: int = 8181) -> str:
-    """确保 Chrome 在线，返回 cdp_url。"""
+    """确保 Chrome 在线，返回 cdp_url。Caido 未运行时直连启动（无代理）。"""
     if is_chrome_running(port):
         cdp_url = f"http://localhost:{port}"
         print(f"[chrome] 已在线: {cdp_url}", file=sys.stderr)
     else:
-        print(f"[chrome] 启动中（port={port}, proxy={caido_port})...", file=sys.stderr)
         launch_chrome(port, caido_port)
         cdp_url = wait_for_chrome(port)
         print(f"[chrome] 就绪: {cdp_url}", file=sys.stderr)
