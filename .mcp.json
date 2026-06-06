@@ -8,16 +8,6 @@
 				"no_proxy": "127.0.0.1,localhost"
 			}
 		},
-		"sqlite": {
-			"command": "python",
-			"args": [
-				"E:\\SRC挖掘\\SRC\\TOOLS\\sqlite-mcp-server.py",
-				"E:\\SRC挖掘\\SRC\\.claude\\skills\\stealth-scanner\\scanner.db"
-			],
-			"env": {
-				"NO_PROXY": "registry.npmjs.org,unpkg.com,*.npmjs.org,github.com,*.github.com"
-			}
-		},
 		"MiniMax": {
 			"command": "uvx",
 			"args": [
@@ -36,8 +26,14 @@
 			]
 		},
 		"caido": {
-			"type": "http",
-			"url": "TODO_CAIDO_MCP_URL_AFTER_INSTALL"
+			"command": "E:\\SRC挖掘\\SRC\\.venv\\Scripts\\python.exe",
+			"args": [
+				"E:\\SRC挖掘\\SRC\\TOOLS\\caido_mcp.py"
+			],
+			"env": {
+				"CAIDO_API_KEY": "FILL_IN_FROM_CAIDO_UI",
+				"CAIDO_URL": "http://127.0.0.1:8181/graphql"
+			}
 		}
 	}
 }
