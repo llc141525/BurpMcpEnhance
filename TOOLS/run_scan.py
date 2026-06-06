@@ -228,6 +228,32 @@ def handle_auth_pending(conn: sqlite3.Connection) -> None:
     )
 
 
+def handle_auth_ready(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    print("[run_scan] phase=auth_ready → 切换至 auth_explore")
+    set_phase(conn, "auth_explore")
+    print_tag("PHASE_TRANSITION", ["auth_ready → auth_explore    开始认证后深度导航"])
+
+
+def handle_auth_explore(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    print("[run_scan] phase=auth_explore → 运行 auth_explore.py ...")
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, str(TOOLS_DIR / "auth" / "auth_explore.py"), "--target", target],
+        timeout=300,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"[warn] auth_explore.py 退出码 {result.returncode}，手动切换 phase→spider")
+        set_phase(conn, "spider")
+
+    sp_count = get_sp_count(conn)
+    print_tag(
+        "PHASE_TRANSITION",
+        [
+            f"auth_explore → spider    认证面 SP: {sp_count} 条",
+        ],
+    )
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -236,6 +262,8 @@ HANDLERS = {
     "spider": handle_spider,
     "probe": handle_probe,
     "brute": handle_brute,
+    "auth_ready": handle_auth_ready,
+    "auth_explore": handle_auth_explore,
 }
 
 
@@ -253,6 +281,22 @@ def main() -> None:
 
     if phase == "auth_pending":
         handle_auth_pending(conn)
+    elif phase == "auth_timeout":
+        print_tag(
+            "AUTH_BARRIER",
+            [
+                "登录超时，请重新尝试手动登录",
+                "完成后执行: UPDATE scan_state SET phase='auth_ready' WHERE id=1",
+            ],
+        )
+    elif phase == "chrome_error":
+        print_tag(
+            "AUTH_BARRIER",
+            [
+                "Chrome 启动失败，请检查 chrome_manager.py",
+                "修复后执行: UPDATE scan_state SET phase='init' WHERE id=1",
+            ],
+        )
     elif phase in HANDLERS:
         HANDLERS[phase](args.target, db_path, conn)
     else:
