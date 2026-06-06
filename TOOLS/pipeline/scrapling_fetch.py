@@ -55,7 +55,7 @@ def _get_body_text(page) -> str:
     return str(body)
 
 
-def fetch(url, proxy=None, timeout=15, force_stealth=False, solve_captcha=False):
+def fetch(url, proxy=None, timeout=15, force_stealth=False, solve_captcha=False, cookies: dict | None = None):
     """返回 (Response 对象, used_stealth_bool, captcha_result)
 
     遇到 WAF 拦截自动 rotate IP 后重试（最多 3 次旋转）。
@@ -72,7 +72,10 @@ def fetch(url, proxy=None, timeout=15, force_stealth=False, solve_captcha=False)
         for attempt in range(max_rotations + 1):
             try:
                 Fetcher = _get_fetcher()
-                page = Fetcher.get(url, proxy=proxy, timeout=timeout)
+                fetch_kwargs = dict(proxy=proxy, timeout=timeout)
+                if cookies:
+                    fetch_kwargs["cookies"] = cookies
+                page = Fetcher.get(url, **fetch_kwargs)
 
                 if is_waf_blocked(page.status, _get_body_text(page)):
                     if attempt < max_rotations:
@@ -113,6 +116,8 @@ def fetch(url, proxy=None, timeout=15, force_stealth=False, solve_captcha=False)
                 disable_resources=True,
                 block_ads=True,
             )
+            if cookies:
+                kwargs["cookies"] = cookies
             if solve_captcha:
                 kwargs["page_action"] = auto_solve_captcha
 
@@ -256,11 +261,14 @@ def main():
 
     proxy = None
     timeout = 15
+    cookies_json = None
     for i, arg in enumerate(args_list):
         if arg == "--proxy" and i + 1 < len(args_list):
             proxy = args_list[i + 1]
         elif arg == "--timeout" and i + 1 < len(args_list):
             timeout = int(args_list[i + 1])
+        elif arg == "--cookies" and i + 1 < len(args_list):
+            cookies_json = args_list[i + 1]
 
     force_stealth = "--stealth" in args_set
     solve_captcha = "--solve-captcha" in args_set
@@ -269,6 +277,8 @@ def main():
 
     extract_all = "--extract-all" in args_set or not any(a.startswith("--extract-") for a in args_set)
 
+    cookies = json.loads(cookies_json) if cookies_json else None
+
     try:
         page, used_stealth, captcha_result = fetch(
             url,
@@ -276,6 +286,7 @@ def main():
             timeout=timeout,
             force_stealth=force_stealth,
             solve_captcha=solve_captcha,
+            cookies=cookies,
         )
     except Exception as e:
         print(json.dumps({"error": str(e), "url": url, "status": 0}, ensure_ascii=False))
