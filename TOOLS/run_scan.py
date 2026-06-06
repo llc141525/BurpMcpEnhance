@@ -19,27 +19,11 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # TOOLS/ → SRC/
-DBS_DIR = PROJECT_ROOT / "dbs"
 TOOLS_DIR = Path(__file__).resolve().parent
 PIPELINE_DIR = TOOLS_DIR / "pipeline"
 
-
-# ── DB helpers ────────────────────────────────────────────────────────────────
-
-
-def find_db(target: str) -> Path:
-    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dbs:
-        sys.exit(f"[error] 找不到目标 DB: dbs/{target}*.db")
-    return dbs[0]
-
-
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    return conn
+sys.path.insert(0, str(TOOLS_DIR))
+from db.db_utils import connect, find_db  # noqa: E402
 
 
 def get_phase(conn: sqlite3.Connection) -> str:

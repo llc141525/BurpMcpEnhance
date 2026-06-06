@@ -33,10 +33,10 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
-DBS_DIR = PROJECT_ROOT / "dbs"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
 from db.cookie_helper import get_auth_cookie_header  # noqa: E402
+from db.db_utils import connect, find_db  # noqa: E402
 
 # nuclei tags 与框架指纹的映射
 FRAMEWORK_TAGS = {
@@ -55,21 +55,6 @@ FRAMEWORK_TAGS = {
 }
 
 HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "HEAD", "TRACE"]
-
-
-def find_db(target: str) -> Path:
-    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dbs:
-        sys.exit(f"[error] 找不到目标 DB: dbs/{target}*.db")
-    return dbs[0]
-
-
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def next_sp_id(conn: sqlite3.Connection, prefix: str = "SP-PR") -> str:

@@ -22,9 +22,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/→TOOLS/→SRC/
-DBS_DIR = PROJECT_ROOT / "dbs"
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
 from db.cookie_helper import get_auth_cookies_dict  # noqa: E402
+from db.db_utils import connect, find_db  # noqa: E402
 
 STATIC_TYPES = {"stylesheet", "image", "font", "media", "websocket", "manifest", "ping"}
 STATIC_EXT_RE = re.compile(r"\.(css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|mp4|mp3|pdf|zip)(\?.*)?$", re.I)
@@ -268,23 +268,13 @@ async def explore_authenticated(
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
-def find_db(target: str) -> Path:
-    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dbs:
-        sys.exit(f"[error] 找不到目标 DB: {target}")
-    return dbs[0]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
     args = parser.parse_args()
 
     db_path = find_db(args.target)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
+    conn = connect(db_path)
 
     row = conn.execute("SELECT seed_url, cdp_url FROM scan_state WHERE id=1").fetchone()
     seed_url = row["seed_url"] if row and row["seed_url"] else None

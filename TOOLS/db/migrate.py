@@ -17,6 +17,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # db/ â†’ TOOLS/ â
 MIGRATIONS_DIR = PROJECT_ROOT / "migrations"
 DBS_DIR = PROJECT_ROOT / "dbs"
 
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_TOOLS_DIR))
+from db.db_utils import connect  # noqa: E402
+
 
 def find_target_db(target_name: str) -> str | None:
     matches = sorted(
@@ -25,12 +29,6 @@ def find_target_db(target_name: str) -> str | None:
         reverse=True,
     )
     return str(matches[0]) if matches else None
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
 
 
 def ensure_schema_version(conn: sqlite3.Connection) -> None:

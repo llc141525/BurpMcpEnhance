@@ -18,8 +18,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # TOOLS/ → SRC/
-DBS_DIR = PROJECT_ROOT / "dbs"
 TMP_DIR = PROJECT_ROOT / "tmp"
+
+_TOOLS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_TOOLS_DIR))
+from db.db_utils import connect, find_db  # noqa: E402
 
 CDN_HOSTS = {
     "cdnjs.cloudflare.com",
@@ -205,21 +208,6 @@ def write_findings_to_db(conn: sqlite3.Connection, js_url: str, findings: dict, 
     )
     conn.commit()
     return count
-
-
-def find_db(target: str) -> Path:
-    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dbs:
-        sys.exit(f"[error] 找不到目标 DB: dbs/{target}*.db")
-    return dbs[0]
-
-
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def analyze_batch(target: str, batch: int = 5) -> dict:

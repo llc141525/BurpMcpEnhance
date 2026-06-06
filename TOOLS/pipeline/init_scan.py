@@ -25,7 +25,10 @@ import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
-DBS_DIR = PROJECT_ROOT / "dbs"
+
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_TOOLS_DIR))
+from db.db_utils import connect, find_db  # noqa: E402
 
 LOGIN_KEYWORDS = re.compile(r"(login|signin|sign-in|auth|passport|sso|oauth|账号|登录|验证|portal)", re.IGNORECASE)
 AUTH_STATUS_CODES = {302, 401, 403}
@@ -33,21 +36,6 @@ AUTH_KEYWORDS = re.compile(
     r"(login|signin|sign-in|auth|passport|sso|oauth|账号|登录|验证|portal|请先登录|会话过期)",
     re.IGNORECASE,
 )
-
-
-def find_db(target: str) -> Path:
-    dbs = sorted(DBS_DIR.glob(f"{target}*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not dbs:
-        sys.exit(f"[error] 找不到目标 DB: dbs/{target}*.db")
-    return dbs[0]
-
-
-def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def get_target_urls(conn: sqlite3.Connection) -> list[str]:
