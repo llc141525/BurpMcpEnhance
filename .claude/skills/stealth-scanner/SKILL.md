@@ -73,15 +73,16 @@ python3 TOOLS/db/db_query.py --target "{目标}" --check
 
 ## 状态机
 
-phases: `init` → `auth_pending` → `auth_ready` → `spider` ↔ `probe` → `brute` → `spider`
+phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spider` ↔ `probe` → `brute` → `spider`
 
 | phase | 含义 | 主力工具 |
 |-------|------|----------|
 | `init` | 初始化 | init_scan.py |
 | `auth_pending` | 等待凭证 | 操作员 Burp 手动登录 |
-| `auth_ready` | 已获会话凭证 | — |
-| `spider` | BFS 爬取 + 框架指纹 | bfs_crawl.py + init_scan.py |
-| `probe` | 业务主动探测 | probe_runner.py |
+| `auth_ready` | 已获会话凭证，自动切换至 auth_explore | run_scan.py |
+| `auth_explore` | 认证后深度导航，拦截 XHR/fetch 发现 API 攻击面 | auth_explore.py |
+| `spider` | BFS 爬取 + 框架指纹（带认证 Cookie） | bfs_crawl.py + init_scan.py |
+| `probe` | 业务主动探测（带认证 Cookie） | probe_runner.py |
 | `brute` | 目录爆破 | brutescan.py |
 | `auth_timeout` | 飞书等待超时（3分钟无回复），跳过该目标 | — |
 | `chrome_error` | Chrome 启动失败（:9222 15秒无响应），通知操作员 | — |
@@ -108,7 +109,8 @@ phase 分支:
 - `probe` → Phase 3
 - `brute` → Phase 4
 - `auth_pending` → 登录流程
-- `auth_ready` → Phase 2
+- `auth_ready` → run_scan.py 自动切至 auth_explore
+- `auth_explore` → run_scan.py 自动运行 auth_explore.py → 完成后 phase=spider
 - `init` 或无数据 → 继续 Phase 1.1
 
 ### 1.1 批量验活 + 技术指纹
@@ -255,7 +257,9 @@ init_scan 检测到 302/401/403 或含登录关键词的页面时自动触发：
 6. agent 填入答案 → 完成登录
 7. 提取 cookies → 写 `auth_sessions`（`cookie_source='browser_use'`）
 8. Surface discovery：展开菜单、导航页 → 发现 URL 写 `pages`（`source='browser_use'`）
-9. 写 `scan_state.phase='auth_ready'` → BFS spider 继续使用认证后 cookies
+9. 写 `scan_state.phase='auth_ready'`
+10. run_scan.py 自动切换至 `auth_explore` → `auth_explore.py` 深度导航点击所有菜单 + 拦截 XHR/fetch → 发现的 API endpoint 写 `suspicious_points`（source='auth_explore'）→ phase 自动切回 `spider`
+11. BFS spider + 后续探测全程带认证 Cookie（从 `auth_sessions` 读取）
 
 ## Phase 3: 业务主动探测
 
