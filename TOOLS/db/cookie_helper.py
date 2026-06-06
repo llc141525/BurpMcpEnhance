@@ -24,13 +24,29 @@ def _path_matches(cookie_path: str, request_path: str) -> bool:
 
 
 def _is_expired(expires_at: str | None) -> bool:
-    """True if the cookie has a known expiry that is in the past."""
+    """True if the cookie has a known expiry that is in the past.
+
+    Accepts ISO-format strings (what write_cookies_to_db stores) and unix
+    timestamp strings (legacy / Playwright raw format).
+    """
     if not expires_at:
         return False
+    # Try ISO format first (primary format written by write_cookies_to_db)
     try:
         exp = datetime.fromisoformat(expires_at)
+        # Strip timezone so comparison with naive datetime.now() works
+        if exp.tzinfo is not None:
+            exp = exp.replace(tzinfo=None)
         return exp < datetime.now()
     except (ValueError, TypeError):
+        pass
+    # Fallback: unix timestamp as float string
+    try:
+        ts = float(expires_at)
+        if ts < 0:
+            return False  # session cookie (no expiry)
+        return datetime.fromtimestamp(ts) < datetime.now()
+    except (ValueError, OSError, OverflowError):
         return False
 
 
