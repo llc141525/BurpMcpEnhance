@@ -160,6 +160,7 @@ async def explore_authenticated(
         page = await context.new_page()
 
         def on_request(request):
+            captured_context = current_nav_context  # 值快照，不捕获引用
             try:
                 if request.resource_type in ("xhr", "fetch"):
                     params = parse_request_params(request.url, request.post_data)
@@ -169,7 +170,7 @@ async def explore_authenticated(
                             "method": request.method,
                             "resource_type": request.resource_type,
                             "params": params,
-                            "nav_context": current_nav_context,
+                            "nav_context": captured_context,
                             "post_data": request.post_data,
                         }
                     )
@@ -206,7 +207,7 @@ async def explore_authenticated(
             if href in visited_hrefs:
                 continue
             visited_hrefs.add(href)
-            current_nav_context = label  # captured by closure — intentional
+            current_nav_context = label
 
             try:
                 if href.startswith("http"):
@@ -234,7 +235,7 @@ async def explore_authenticated(
 
                     for sub_href, sub_label in sub_hrefs[:15]:
                         visited_hrefs.add(sub_href)
-                        current_nav_context = sub_label  # captured by closure — intentional
+                        current_nav_context = sub_label
                         try:
                             if sub_href.startswith("http"):
                                 sub_url = sub_href
