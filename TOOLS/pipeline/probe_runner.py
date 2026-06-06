@@ -55,14 +55,14 @@ FRAMEWORK_TAGS = {
     "log4j": "log4j",
 }
 
-HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "HEAD", "TRACE"]
+HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "TRACE"]
 
 
 def new_sp_id(prefix: str = "SP-PR") -> str:
     return f"{prefix}-{_uuid.uuid4().hex[:8]}"
 
 
-def write_sp(
+def _write_sp_direct(
     conn: sqlite3.Connection,
     url: str,
     param: str,
@@ -84,47 +84,81 @@ def write_sp(
     return sp_id
 
 
+# Keep backward-compatible alias used by mode_params and mode_nuclei
+write_sp = _write_sp_direct
+
+
 def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None, cookie_header: str | None = None) -> int:
-    """测试非标准 HTTP 方法，响应与 GET 差异时写 SP。"""
+    """测试非标准 HTTP 方法。
+
+    OPTIONS: 仅当 Allow/ACAO 头声明危险方法时写 SP。
+    PUT/DELETE/PATCH/TRACE: 仅当响应 2xx 时写 SP。
+    HEAD: 永不写 SP（200 是正常行为）。
+    """
     import urllib.request
 
-    proxies = {"http": proxy, "https": proxy} if proxy else {}
     added = 0
 
     for method in HTTP_METHODS:
-        try:
-            import urllib.error
+        for attempt, retry_delay in enumerate((0, 1, 2)):
+            if retry_delay:
+                import time
 
-            req = urllib.request.Request(url, method=method)
-            req.add_header("User-Agent", "Mozilla/5.0")
-            if cookie_header:
-                req.add_header("Cookie", cookie_header)
-            ctx = None
-            if proxies:
-                import urllib.request as ur
+                time.sleep(retry_delay)
+            try:
+                req = urllib.request.Request(url, method=method)
+                req.add_header("User-Agent", "Mozilla/5.0")
+                if cookie_header:
+                    req.add_header("Cookie", cookie_header)
 
-                handler = ur.ProxyHandler(proxies)
-                ctx = ur.build_opener(handler)
-            resp = ctx.open(req, timeout=10) if ctx else urllib.request.urlopen(req, timeout=10)  # type: ignore[arg-type]
-            code = resp.getcode()
-            size = len(resp.read())
-            if code in (200, 201, 204) or (method == "OPTIONS" and code == 200):
-                sp_id = write_sp(
-                    conn,
-                    url,
-                    method,
-                    method,
-                    "method_tampering",
-                    f"{method} → HTTP {code}, body_len={size}",
-                    f"{method} 返回 {code}，可能暴露未授权操作面",
-                )
+                if proxy:
+                    import urllib.request as ur
+
+                    handler = ur.ProxyHandler({"http": proxy, "https": proxy})
+                    opener = ur.build_opener(handler)
+                    resp = opener.open(req, timeout=10)
+                else:
+                    resp = urllib.request.urlopen(req, timeout=10)
+
+                code = resp.getcode()
+                headers = dict(resp.headers)
+                body = resp.read()
+                size = len(body)
+
+                if method == "OPTIONS":
+                    allow_raw = headers.get("Allow", "") + "," + headers.get("Access-Control-Allow-Methods", "")
+                    exposed_dangerous = {m.strip().upper() for m in allow_raw.split(",")} & {
+                        "PUT",
+                        "DELETE",
+                        "PATCH",
+                        "TRACE",
+                    }
+                    if not exposed_dangerous:
+                        break  # OPTIONS 200 without dangerous methods is normal
+                    evidence = f"OPTIONS → HTTP {code}, Allow 暴露危险方法: {sorted(exposed_dangerous)}"
+                    reasoning = f"OPTIONS 响应头声明支持 {sorted(exposed_dangerous)}，可能暴露未授权写操作面"
+                elif method in ("PUT", "DELETE", "PATCH", "TRACE"):
+                    if code not in (200, 201, 204):
+                        break
+                    evidence = f"{method} → HTTP {code}, body_len={size}"
+                    reasoning = f"{method} 返回 {code}，可能暴露未授权操作面"
+                else:
+                    break
+
+                sp_id = _write_sp_direct(conn, url, method, method, "method_tampering", evidence, reasoning)
                 print(f"  [+] {method} {url} → {code} ({sp_id})")
                 added += 1
-        except Exception as e:
-            if "403" in str(e) or "405" in str(e):
-                pass  # 正常拒绝
-            elif "404" not in str(e):
+                break
+
+            except Exception as e:
+                e_str = str(e)
+                if any(x in e_str for x in ("403", "404", "405", "501")):
+                    break  # 明确拒绝，不重试
+                if attempt < 2:
+                    continue
                 print(f"  [-] {method} {url} → {e}")
+                break
+
     return added
 
 
