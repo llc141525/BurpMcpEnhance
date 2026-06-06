@@ -1,48 +1,48 @@
 ---
 name: stealth-scanner
 description: 网站爬虫与主动探测。BFS 发现页面/JS/端点（katana+httpx），框架指纹+参数fuzz+框架专项（nuclei+arjun）。机械动作全部由脚本完成，AI 只做分析判断。写 SQLite，不验证漏洞。每 10 轮写入 memory 进度总结。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, mcp__caido__*, Bash, Read, Write, Edit, Grep, Glob
+allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glob
 ---
 
 # stealth-scanner
 
 仅负责信息收集 + 主动探测。结果写 SQLite，漏洞验证由 vuln-review 在独立 session 完成。
 
+## 使用方式
+
+1. 运行: `python TOOLS/run_scan.py --target "{目标}"`
+2. 读输出标签并响应:
+   - `[AUTH_BARRIER]` → 告知操作员等待登录
+   - `[NEW_SUSPICIOUS_POINTS]` → 判断哪些 SP 值得发给 vuln-review
+   - `[SPIDER_BATCH]` / `[INIT_DONE]` / `[PHASE_TRANSITION]` → 再次调用 run_scan.py
+3. 无其他调度步骤
+
 ## 环境常量
 
 | 常量 | 值 |
 |------|-----|
 | DBS_DIR | `E:\SRC挖掘\SRC\dbs` |
-| init_scan | `python3 TOOLS/init_scan.py` |
-| bfs_crawl | `python3 TOOLS/bfs_crawl.py` |
-| probe_runner | `python3 TOOLS/probe_runner.py` |
-| scrapling_fetch | `python3 TOOLS/scrapling_fetch.py` |
-| db_query | `python3 TOOLS/db_query.py` |
-| brutescan | `python3 TOOLS/brutescan.py` |
 | Memory 路径 | `C:\Users\llc\.claude\projects\e--SRC---SRC\memory\{target_name}_progress.md` |
 
 ## 工具速查
 
 | 场景 | 命令 |
 |------|------|
-| 验活 + 技术指纹 | `python3 TOOLS/init_scan.py --target "{目标}"` |
-| BFS 批量爬取 | `python3 TOOLS/bfs_crawl.py --target "{目标}" --depth 3` |
-| 参数 fuzz（批量） | `python3 TOOLS/probe_runner.py --target "{目标}" --mode params --batch 20` |
-| 框架专项（nuclei） | `python3 TOOLS/probe_runner.py --target "{目标}" --mode nuclei` |
-| HTTP 方法探测 | `python3 TOOLS/probe_runner.py --target "{目标}" --mode methods --url "{url}"` |
-| 单页深度分析 | `python3 TOOLS/scrapling_fetch.py "{url}" --extract-all` |
-| 目录爆破 | `python3 TOOLS/brutescan.py -u {url} -n 200` |
-| Chrome 单实例启动 | `python3 TOOLS/chrome_manager.py --target "{目标}"` |
-| 自动登录 + surface discovery | `python3 TOOLS/browser_auth.py --target "{目标}" --url "https://..."` |
-| 飞书通知（内部） | 由 browser_auth.py 内部调用 |
+| **启动/继续扫描** | `python TOOLS/run_scan.py --target "{目标}"` |
+| 单独 JS 分析 | `python TOOLS/js_analyzer.py --target "{目标}" --batch 5` |
+| DB 查询 | `python TOOLS/db/db_query.py --target "{目标}" "SELECT ..."` |
+| 资产侦察 | `python TOOLS/recon/fofa_relay.py` |
+| 手动登录后恢复 | `python TOOLS/db/db_query.py --target "{目标}" "UPDATE scan_state SET phase='spider' WHERE id=1" --write` |
+| Chrome 启动 | `python TOOLS/auth/chrome_manager.py --target "{目标}"` |
+| 自动登录 | `python TOOLS/auth/browser_auth.py --target "{目标}" --url "https://..."` |
 
 ## DB 操作
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" "SELECT phase FROM scan_state WHERE id=1"
-python3 TOOLS/db_query.py --target "{目标}" "SELECT url, depth FROM pages WHERE status='queued' LIMIT 5"
-python3 TOOLS/db_query.py --target "{目标}" "UPDATE scan_state SET phase='spider' WHERE id=1" --write
-python3 TOOLS/db_query.py --target "{目标}" --check
+python3 TOOLS/db/db_query.py --target "{目标}" "SELECT phase FROM scan_state WHERE id=1"
+python3 TOOLS/db/db_query.py --target "{目标}" "SELECT url, depth FROM pages WHERE status='queued' LIMIT 5"
+python3 TOOLS/db/db_query.py --target "{目标}" "UPDATE scan_state SET phase='spider' WHERE id=1" --write
+python3 TOOLS/db/db_query.py --target "{目标}" --check
 ```
 
 ## 前置检查
@@ -55,7 +55,7 @@ mcp__burp__list_proxy_http_history(count=1)
 httpx --version && nuclei --version && katana --version
 
 # 3. DB
-python3 TOOLS/db_query.py --target "{目标}" --check
+python3 TOOLS/db/db_query.py --target "{目标}" --check
 ```
 
 任一失败则提示对应组件不可用，终止执行。
@@ -93,14 +93,14 @@ phases: `init` → `auth_pending` → `auth_ready` → `spider` ↔ `probe` → 
 从 `args="目标: {name}"` 解析目标名。
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" "SELECT name FROM sqlite_master WHERE type='table' AND name='scan_state'"
+python3 TOOLS/db/db_query.py --target "{目标}" "SELECT name FROM sqlite_master WHERE type='table' AND name='scan_state'"
 ```
 
 - 表存在 → 读取 phase
 - 不存在 → 输出 "请先调用 asset-recon skill 初始化目标"，终止
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" "SELECT phase, seed_url, total_pages, total_js, total_suspicious, total_findings, call_count FROM scan_state WHERE id=1"
+python3 TOOLS/db/db_query.py --target "{目标}" "SELECT phase, seed_url, total_pages, total_js, total_suspicious, total_findings, call_count FROM scan_state WHERE id=1"
 ```
 
 phase 分支:
@@ -114,7 +114,7 @@ phase 分支:
 ### 1.1 批量验活 + 技术指纹
 
 ```bash
-python3 TOOLS/init_scan.py --target "{目标}"
+python3 TOOLS/pipeline/init_scan.py --target "{目标}"
 ```
 
 - httpx 批量检测所有 `targets` 域名：存活状态、页面标题、技术栈、IP
@@ -162,7 +162,7 @@ phase = 'brute':
 ### 2.1 批量 BFS 爬取（katana）
 
 ```bash
-python3 TOOLS/bfs_crawl.py --target "{目标}" --depth 3 --max-pages 500
+python3 TOOLS/pipeline/bfs_crawl.py --target "{目标}" --depth 3 --max-pages 500
 ```
 
 - katana 从 pages 表中的种子 URL 出发，深度优先爬取
@@ -175,13 +175,13 @@ python3 TOOLS/bfs_crawl.py --target "{目标}" --depth 3 --max-pages 500
 init_scan.py 已经在 Phase 1 自动完成。若需补充单目标：
 
 ```bash
-python3 TOOLS/init_scan.py --urls "{url}"
+python3 TOOLS/pipeline/init_scan.py --urls "{url}"
 ```
 
 从 `targets.tech_stack` 读取指纹结果，写入 `suspicious_points`（test_type='framework_fingerprint'）：
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" \
+python3 TOOLS/db/db_query.py --target "{目标}" \
   "INSERT INTO suspicious_points (id, url, test_type, evidence, source, risk, test_status, created_at)
    SELECT 'SP-FP-'||substr(t.id,1,3), t.domain, 'framework_fingerprint', t.tech_stack, 'init_scan', 'Info', 'untested', datetime('now','localtime')
    FROM targets t WHERE t.tech_stack IS NOT NULL AND t.tech_stack != ''" --write
@@ -192,14 +192,14 @@ python3 TOOLS/db_query.py --target "{目标}" \
 对于含有以下特征的页面（从 pages 表中筛选），AI 调用 scrapling_fetch.py 做深度分析：
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" \
+python3 TOOLS/db/db_query.py --target "{目标}" \
   "SELECT url FROM pages WHERE status='queued' AND (url LIKE '%login%' OR url LIKE '%api%' OR url LIKE '%admin%' OR url LIKE '%upload%') LIMIT 5"
 ```
 
 对每个选中 URL 执行：
 
 ```bash
-python3 TOOLS/scrapling_fetch.py "{url}" --extract-all
+python3 TOOLS/pipeline/scrapling_fetch.py "{url}" --extract-all
 ```
 
 从输出中识别：
@@ -224,7 +224,7 @@ SELECT url FROM js_files WHERE analyzed=0 LIMIT 1;
 ```
 
 ```bash
-python3 TOOLS/scrapling_fetch.py "{js_url}" --html
+python3 TOOLS/pipeline/scrapling_fetch.py "{js_url}" --html
 ```
 
 JS 内容喂 MiniMax：
@@ -244,6 +244,8 @@ UPDATE js_files SET analyzed=1, discovered_apis_json='{MiniMax输出}', hardcode
 ### 2.5 Auth 处理
 
 init_scan 检测到 302/401/403 或含登录关键词的页面时自动触发：
+
+前置：`chrome_manager.py` 检测 Caido 是否在线（`:8181`）再决定是否挂代理。需先确认 Caido 已启动（`caido-cli --listen 127.0.0.1:8181 --no-open`）。
 
 1. 写 `scan_state.phase='auth_pending'`
 2. `chrome_manager.py` 确保 Chrome 在 `:9222` 在线（不重复启动）
@@ -278,7 +280,7 @@ SELECT id, url, param, method, test_type, evidence, risk FROM suspicious_points 
 对业务端点（/api/、/register/、!action 等，**不含首页/登录页**）：
 
 ```bash
-python3 TOOLS/probe_runner.py --target "{目标}" --mode methods --url "{api_url}"
+python3 TOOLS/pipeline/probe_runner.py --target "{目标}" --mode methods --url "{api_url}"
 ```
 
 - 自动测试 OPTIONS/PUT/DELETE/PATCH/HEAD/TRACE
@@ -287,7 +289,7 @@ python3 TOOLS/probe_runner.py --target "{目标}" --mode methods --url "{api_url
 ### 3.3 参数 Fuzz（脚本）
 
 ```bash
-python3 TOOLS/probe_runner.py --target "{目标}" --mode params --batch 20
+python3 TOOLS/pipeline/probe_runner.py --target "{目标}" --mode params --batch 20
 ```
 
 - arjun 对 pages 表中带参数的 URL 批量发现隐藏参数
@@ -296,7 +298,7 @@ python3 TOOLS/probe_runner.py --target "{目标}" --mode params --batch 20
 也可针对单个 URL：
 
 ```bash
-python3 TOOLS/probe_runner.py --target "{目标}" --mode params --url "{url}"
+python3 TOOLS/pipeline/probe_runner.py --target "{目标}" --mode params --url "{url}"
 ```
 
 ### 3.4 表单交互（AI 驱动）
@@ -331,7 +333,7 @@ mcp__burp__send_http1_request(method="POST", url="http://目标/form-action", ..
 根据 Phase 2 识别的框架，自动触发对应模板：
 
 ```bash
-python3 TOOLS/probe_runner.py --target "{目标}" --mode nuclei
+python3 TOOLS/pipeline/probe_runner.py --target "{目标}" --mode nuclei
 ```
 
 - 自动从 `suspicious_points.evidence` 中匹配框架名 → 选 nuclei tags
@@ -341,7 +343,7 @@ python3 TOOLS/probe_runner.py --target "{目标}" --mode nuclei
 指定 tags：
 
 ```bash
-python3 TOOLS/probe_runner.py --target "{目标}" --mode nuclei --tags "springboot,thinkphp"
+python3 TOOLS/pipeline/probe_runner.py --target "{目标}" --mode nuclei --tags "springboot,thinkphp"
 ```
 
 ### 3.7 暂停条件
@@ -368,7 +370,7 @@ UPDATE scan_state SET phase='probe', total_suspicious=(SELECT count(*) FROM susp
 ### 4.2 运行 brutescan
 
 ```bash
-python3 TOOLS/brutescan.py -u {target_url} -n 200 -o results.json
+python3 TOOLS/pipeline/brutescan.py -u {target_url} -n 200 -o results.json
 ```
 
 ### 4.3 导入结果

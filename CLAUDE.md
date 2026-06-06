@@ -46,23 +46,32 @@
 
 `TOOLS/` 目录:
 
-| 脚本                 | 用途                                                                              |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `scrapling_fetch.py` | **爬虫主力**: Scrapling 驱动页面抓取 + 结构化提取（链接/表单/API）                |
-| `db_query.py`        | **统一 DB 查询**: `dbs/{目标}_{日期}.db` 的 SELECT/INSERT/UPDATE，支持 --target/--file/--init |
-| `burp-surface.py`    | Burp 历史参数词频分析、端点树构建                                                 |
-| `brutescan.py`       | 轻量目录爆破（200 条/轮，自动 Clash IP 轮换）                                     |
-| `clash-helper.ps1`   | Clash 代理切换（HK→JP→SG→TW→KR→MY 轮换）                                          |
-| `captcha_bypass.py`  | **验证码绕过**: OCR 图形验证码 + 滑块缺口检测 + 拟人轨迹生成（基于 ddddocr）      |
-| `fofa_relay.py`      | **FOFA 中转查询**: 通过代理 API 查询，无需 F 币（env: FOFA_RELAY_KEY）              |
-| `zoomeye_query.py`   | **ZoomEye 被动侦察**: 同上，免费 10000 条/月（env: ZOOMEYE_KEY）                  |
-| `variant_search.py`  | **变种搜索**: 从确认漏洞提取签名 → SQL 搜同类端点/参数 → 写入 suspicious_points   |
-| `migrate.py`         | **DB 迁移**: 按编号执行 `migrations/` 目录 SQL 文件，支持 --target / --status     |
-| `auth_check.py`      | **Session 健康检查**: 检查 auth_sessions 表中 token 有效性，支持 --update 回写 DB |
-| `db_backup.py`       | **DB 备份**: sqlite3 .backup 命令安全备份（WAL 兼容），支持 --keep 自动轮换       |
-| `session_dash.py`    | **Session 总览**: 读 scan_state + 各表计数，检测停滞 (>24h 无进展)，支持 --all    |
-| `log_utils.py`       | **日志 helper**: 结构化 JSON lines 日志，供其他 TOOLS opt-in 导入                  |
-| `log_view.py`        | **日志查询**: 按 today/errors/waf/target/tool 过滤 .session-log.jsonl               |
+| 脚本 | 用途 |
+|------|------|
+| `run_scan.py` | **唯一主入口**: 读 phase 自动调度下一步 |
+| `js_analyzer.py` | **JS 批量分析**: mmx 提取端点/密钥 → suspicious_points |
+| `pipeline/init_scan.py` | httpx 批量验活 + 技术指纹 |
+| `pipeline/bfs_crawl.py` | katana BFS 爬取，写 pages/js_files |
+| `pipeline/probe_runner.py` | arjun 参数 fuzz + nuclei + HTTP 方法探测 |
+| `pipeline/brutescan.py` | 轻量目录爆破 |
+| `pipeline/scrapling_fetch.py` | Scrapling 驱动页面抓取 + 结构化提取 |
+| `auth/browser_auth.py` | browser-use 登录 agent |
+| `auth/chrome_manager.py` | Chrome 单实例 CDP 管理 |
+| `auth/captcha_bypass.py` | OCR 验证码 + 滑块绕过 |
+| `auth/feishu_notify.py` | 飞书通知 + 操作员回复轮询 |
+| `recon/fofa_relay.py` | FOFA 被动侦察 |
+| `recon/zoomeye_query.py` | ZoomEye 被动侦察 |
+| `recon/burp-surface.py` | Burp 历史参数词频分析 |
+| `db/db_query.py` | 统一 DB 查询工具 |
+| `db/db_backup.py` | DB 备份 |
+| `db/migrate.py` | DB schema 迁移 |
+| `db/auth_check.py` | Session 健康检查 |
+| `db/session_dash.py` | 扫描进度总览 |
+| `db/log_utils.py` | 结构化 JSON 日志 helper |
+| `db/log_view.py` | 日志查询 |
+| `utils/variant_search.py` | 变种搜索 |
+| `utils/waf_rotate.py` | WAF 绕过/IP 轮换 |
+| `utils/clash-helper.ps1` | Clash 代理切换 |
 
 ### 省 Token 策略 (MiniMax MCP + CLI)
 
