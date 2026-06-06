@@ -27,6 +27,9 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
+from db.cookie_helper import get_auth_cookie_header  # noqa: E402
+
 JS_EXT_RE = re.compile(r"\.js(\?.*)?$", re.IGNORECASE)
 SKIP_EXT_RE = re.compile(
     r"\.(css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|mp4|mp3|pdf|zip|tar|gz)(\?.*)?$",
@@ -77,7 +80,7 @@ def same_domain(base: str, url: str) -> bool:
         return False
 
 
-def run_katana(seed_urls: list[str], depth: int, max_pages: int) -> list[str]:
+def run_katana(seed_urls: list[str], depth: int, max_pages: int, cookie_header: str | None = None) -> list[str]:
     if not shutil.which("katana"):
         sys.exit("[error] katana 未安装，请先安装: https://github.com/projectdiscovery/katana")
 
@@ -108,6 +111,8 @@ def run_katana(seed_urls: list[str], depth: int, max_pages: int) -> list[str]:
         out_file,
         "-silent",
     ]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
     print(f"[katana] 从 {len(seed_urls)} 个种子爬取（depth={depth}, max={max_pages}）...")
     try:
         subprocess.run(cmd, check=False, timeout=300)
@@ -194,7 +199,11 @@ def main() -> None:
     print(f"[db] {db_path.name}")
     print(f"[seeds] {seed_urls[:5]}")
 
-    discovered = run_katana(seed_urls, args.depth, args.max_pages)
+    cookie_header = get_auth_cookie_header(str(db_path), seed_urls[0] if seed_urls else "")
+    if cookie_header:
+        print(f"[bfs_crawl] 带认证 Cookie 爬取 ({len(cookie_header.split(';'))} 条)", file=sys.stderr)
+
+    discovered = run_katana(seed_urls, args.depth, args.max_pages, cookie_header=cookie_header)
     pages_added, js_added = import_to_db(conn, discovered, seed_urls)
     conn.close()
 
