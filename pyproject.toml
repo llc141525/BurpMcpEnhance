@@ -18,6 +18,7 @@ select = ["E", "F", "I", "B", "S"]
 "TOOLS/pipeline/bfs_crawl.py" = ["S603", "S607"]
 "TOOLS/pipeline/probe_runner.py" = ["S603", "S607", "S608", "S310"]
 "TOOLS/run_scan.py" = ["S603", "S608"]
+"TOOLS/js_analyzer.py" = ["S501", "S603", "S607"]
 
 [tool.ruff.format]
 quote-style = "double"
