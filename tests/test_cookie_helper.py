@@ -61,3 +61,18 @@ def test_get_auth_cookies_dict():
 def test_no_matching_cookies_returns_none():
     db = _make_db([])
     assert get_auth_cookie_header(db, "example.com") is None
+
+
+def test_get_auth_cookie_header_domain_with_port():
+    db = _make_db([
+        {"type": "cookie", "name": "SID", "value": "s2", "domain": "example.com"},
+    ])
+    # domain string includes port — should still match
+    assert get_auth_cookie_header(db, "example.com:8080") == "SID=s2"
+
+
+def test_get_auth_cookie_header_full_url_domain():
+    db = _make_db([
+        {"type": "cookie", "name": "T", "value": "tok", "domain": "example.com"},
+    ])
+    assert get_auth_cookie_header(db, "http://example.com") == "T=tok"

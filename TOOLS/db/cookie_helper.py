@@ -2,6 +2,7 @@
 """从 auth_sessions 表读取活跃 cookies，用于 pipeline 工具的 Cookie 头注入。"""
 
 import sqlite3
+import sys
 from urllib.parse import urlparse
 
 
@@ -19,13 +20,12 @@ def get_auth_cookies_dict(db_path: str, domain: str) -> dict[str, str]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT token_name, token_value, domain FROM auth_sessions WHERE is_active=1").fetchall()
         conn.close()
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        print(f"[cookie_helper] DB error ({db_path}): {e}", file=sys.stderr)
         return {}
 
     # 提取 host（去掉端口）
-    host = (
-        domain.split(":")[0] if ":" in domain and not domain.startswith("http") else urlparse(domain).hostname or domain
-    )
+    host = urlparse(domain if "://" in domain else f"http://{domain}").hostname or domain.split(":")[0]
 
     result = {}
     for row in rows:
