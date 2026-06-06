@@ -85,8 +85,9 @@ def apply_migration(conn: sqlite3.Connection, version: int, filepath: str) -> bo
         conn.commit()
         return True
     except sqlite3.OperationalError as e:
-        # column already exists etc. → record and continue
-        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+        e_str = str(e)
+        # Accept only known idempotent errors: duplicate column or table already exists
+        if re.search(r"duplicate column name|table .+ already exists", e_str, re.IGNORECASE):
             conn.execute(
                 "INSERT OR IGNORE INTO schema_version (version, description) VALUES (?, ?)",
                 (version, Path(filepath).stem),
