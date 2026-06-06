@@ -135,7 +135,7 @@ def update_target(conn: sqlite3.Connection, result: dict) -> dict:
     if needs_auth:
         print(f"  [!] 疑似需要认证: {url} (HTTP {status_code}) — {title}")
 
-    if status_code in (200, 301, 302, 403):
+    if status_code in (200, 301, 302):
         conn.execute(
             "INSERT INTO pages (url, depth, status) VALUES (?, 0, 'queued') ON CONFLICT(url) DO NOTHING",
             (url,),
@@ -148,7 +148,7 @@ def update_target(conn: sqlite3.Connection, result: dict) -> dict:
 def print_summary(results: list[dict]) -> None:
     print("\n=== init_scan 完成 ===")
     print(f"扫描: {len(results)} 个")
-    live = [r for r in results if r.get("status_code", 0) in (200, 301, 302, 403)]
+    live = [r for r in results if r.get("status_code", 0) in (200, 301, 302)]
     print(f"存活: {len(live)} 个")
     for r in live:
         tech = ", ".join(r.get("tech", []) or [])
