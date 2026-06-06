@@ -29,6 +29,8 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/ → TOOLS/ → SRC/
+_TOOLS_DIR = Path(__file__).resolve().parent.parent  # auth/ → TOOLS/
+sys.path.insert(0, str(_TOOLS_DIR))
 DBS_DIR = PROJECT_ROOT / "dbs"
 TMP_DIR = PROJECT_ROOT / "tmp"
 
@@ -135,21 +137,14 @@ async def run_browser_auth(
         print("[error] 环境变量 FEISHU_CHAT_ID 未设置", file=sys.stderr)
         return False
 
+    # DeepSeek thinking mode conflicts with tool_choice — disable via model_kwargs extra_body
     llm = ChatAnthropic(
         model="deepseek-v4-flash",
         api_key=os.environ["DEEPSEEK_API"],
         base_url="https://api.deepseek.com/anthropic",
         timeout=60,
+        model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
     )
-    # DeepSeek thinking mode conflicts with tool_choice — disable it via extra_body
-    _orig_params = llm._get_client_params_for_invoke
-
-    def _patched_params():
-        p = _orig_params()
-        p["extra_body"] = {"thinking": {"type": "disabled"}}
-        return p
-
-    llm._get_client_params_for_invoke = _patched_params
 
     browser_session = BrowserSession(
         cdp_url=cdp_url,
@@ -160,7 +155,7 @@ async def run_browser_auth(
 
     @controller.action("Ask operator via Feishu — send screenshot and wait for reply")
     async def ask_feishu(message: str, screenshot_path: str | None = None) -> str:
-        from TOOLS.feishu_notify import send_image_wait_reply, send_text_wait_reply
+        from auth.feishu_notify import send_image_wait_reply, send_text_wait_reply  # noqa: PLC0415
 
         if screenshot_path and Path(screenshot_path).exists():
             reply = send_image_wait_reply(chat_id, screenshot_path, message, timeout=180)
@@ -172,12 +167,22 @@ async def run_browser_auth(
 
     base_domain = urlparse(login_url).netloc
 
+    login_method_hint = (
+        '请优先点击"账号密码"或"用户名密码"登录选项卡/按钮，切换到账号密码表单，然后继续。'
+        if username
+        else "选择合适的登录方式继续。"
+    )
+    cred_step = (
+        f"直接填入账号 {username} 和密码 {password} 并提交，无需询问操作员。"
+        if username
+        else '提示 ask_feishu "请在浏览器中手动输入账号密码并登录"，等待跳转。'
+    )
     task = f"""
 你是一个安全研究员，帮助测试员完成对 {target} 的登录并发现认证后的页面。
 
 步骤：
 1. 导航到登录页: {login_url}
-2. 页面可能有多种登录方式（微信/钉钉/QQ/账号密码等）。{'请优先点击"账号密码"或"用户名密码"登录选项卡/按钮，切换到账号密码表单，然后继续。' if username else "选择合适的登录方式继续。"}
+2. 页面可能有多种登录方式（微信/钉钉/QQ/账号密码等）。{login_method_hint}
 3. 检测登录阻断类型：
    - 若出现二维码（canvas 或 img 元素）：截图保存到 {TMP_DIR}/qr_{target}.png，
      然后调用 ask_feishu 发送截图，消息为"请用手机扫码登录 {target}"，
@@ -188,13 +193,16 @@ async def run_browser_auth(
    - 若出现短信验证码输入框：点击"发送短信"按钮，
      调用 ask_feishu（无截图），消息为"短信验证码已发送，请回复验证码"，
      拿到回复后填入输入框并提交。
-   - 若只需用户名/密码：{"直接填入账号 " + username + " 和密码 " + password + " 并提交，无需询问操作员。" if username else '提示 ask_feishu "请在浏览器中手动输入账号密码并登录"，等待跳转。'}
-4. 判断登录是否成功：当前页面 URL 已不再包含 "login"、"sso"、"passport"、"signin" 等关键词，或页面出现用户名/头像/个人中心等已登录标志，即视为登录成功。
-5. 登录成功后，收集当前页面所有可见链接和导航菜单项，点击展开各级菜单，记录发现的 URL（不限于固定名称，任何认证后才能访问的页面都要记录）。
+   - 若只需用户名/密码：{cred_step}
+4. 判断登录是否成功：当前页面 URL 已不再包含 "login"、"sso"、"passport"、"signin" 等关键词，
+   或页面出现用户名/头像/个人中心等已登录标志，即视为登录成功。
+5. 登录成功后，收集当前页面所有可见链接和导航菜单项，点击展开各级菜单，
+   记录发现的 URL（不限于固定名称，任何认证后才能访问的页面都要记录）。
 6. 完成后输出 JSON（放在最后一行）：
    {{"urls": [{{"url": "...", "title": "..."}}]}}
 
-约束：不提交表单，不点击删除，不点击退出登录。如果任务已完成（已收集到 URL），直接输出 JSON 结束，不要重复操作。
+约束：不提交表单，不点击删除，不点击退出登录。如果任务已完成（已收集到 URL），
+直接输出 JSON 结束，不要重复操作。
 """
 
     try:
