@@ -16,6 +16,7 @@ import json
 import re
 import sqlite3
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -56,7 +57,7 @@ def filter_api_requests(requests: list[dict], base_domain: str) -> list[dict]:
     result = []
     base = _strip_www(base_domain.split(":")[0])
     for r in requests:
-        if r.get("resource_type") not in ("xhr", "fetch", "document"):
+        if r.get("resource_type") not in ("xhr", "fetch"):
             continue
         url = r.get("url", "")
         try:
@@ -96,20 +97,10 @@ def write_explore_results_to_db(
     sp_prefix: str = "SP-AE",
 ) -> dict:
     """写 suspicious_points + pages，返回 {'sp': N, 'pages': N}。"""
-    rows = conn.execute(
-        "SELECT id FROM suspicious_points WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
-        (f"{sp_prefix}-%",),
-    ).fetchone()
-    try:
-        next_num = int(rows[0].split("-")[-1]) + 1 if rows else 1
-    except (ValueError, IndexError):
-        next_num = 1
-
     sp_count = 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for req in api_requests:
-        sp_id = f"{sp_prefix}-{next_num:03d}"
-        next_num += 1
+        sp_id = f"{sp_prefix}-{uuid.uuid4().hex[:8]}"
         params = req.get("params", [])
         context = req.get("nav_context", "")
         cur = conn.execute(
@@ -169,18 +160,21 @@ async def explore_authenticated(
         page = await context.new_page()
 
         def on_request(request):
-            if request.resource_type in ("xhr", "fetch"):
-                params = parse_request_params(request.url, request.post_data)
-                all_api_requests.append(
-                    {
-                        "url": request.url,
-                        "method": request.method,
-                        "resource_type": request.resource_type,
-                        "params": params,
-                        "nav_context": current_nav_context,
-                        "post_data": request.post_data,
-                    }
-                )
+            try:
+                if request.resource_type in ("xhr", "fetch"):
+                    params = parse_request_params(request.url, request.post_data)
+                    all_api_requests.append(
+                        {
+                            "url": request.url,
+                            "method": request.method,
+                            "resource_type": request.resource_type,
+                            "params": params,
+                            "nav_context": current_nav_context,
+                            "post_data": request.post_data,
+                        }
+                    )
+            except Exception as e:  # noqa: BLE001
+                print(f"[auth_explore] on_request error: {e}", file=sys.stderr)
 
         page.on("request", on_request)
 
