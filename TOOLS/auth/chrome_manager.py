@@ -4,7 +4,7 @@
   python3 TOOLS/chrome_manager.py --target "目标名"
   # 输出: http://localhost:9222
 
-  python3 TOOLS/chrome_manager.py --port 9223 --caido-port 8181 --target "目标名"
+  python3 TOOLS/chrome_manager.py --port 9223 --burp-port 8080 --target "目标名"
 """
 
 import argparse
@@ -46,7 +46,7 @@ def is_chrome_running(port: int = 9222) -> bool:
         return False
 
 
-def is_caido_running(port: int = 8181) -> bool:
+def is_burp_running(port: int = 8080) -> bool:
     try:
         requests.get(f"http://127.0.0.1:{port}", timeout=2)
         return True
@@ -56,7 +56,7 @@ def is_caido_running(port: int = 8181) -> bool:
         return True  # 有响应（即使非 200）说明端口在监听
 
 
-def launch_chrome(port: int = 9222, caido_port: int = 8181) -> subprocess.Popen:
+def launch_chrome(port: int = 9222, burp_port: int = 8080) -> subprocess.Popen:
     chrome = find_chrome_executable()
     BROWSER_PROFILE.mkdir(exist_ok=True)
     cmd = [
@@ -69,11 +69,11 @@ def launch_chrome(port: int = 9222, caido_port: int = 8181) -> subprocess.Popen:
         "--lang=zh-CN",
         "--window-position=1400,0",
     ]
-    if is_caido_running(caido_port):
-        cmd.append(f"--proxy-server=http://127.0.0.1:{caido_port}")
-        print(f"[chrome] Caido 在线，启用代理 :{caido_port}", file=sys.stderr)
+    if is_burp_running(burp_port):
+        cmd.append(f"--proxy-server=http://127.0.0.1:{burp_port}")
+        print(f"[chrome] Burp 在线，启用代理 :{burp_port}", file=sys.stderr)
     else:
-        print(f"[chrome] Caido 未运行（:{caido_port}），直连启动（无代理）", file=sys.stderr)
+        print(f"[chrome] Burp 未运行（:{burp_port}），直连启动（无代理）", file=sys.stderr)
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
 
 
@@ -105,13 +105,13 @@ def write_cdp_url_to_db(db_path: str, cdp_url: str) -> None:
     conn.close()
 
 
-def ensure_chrome(target: str, port: int = 9222, caido_port: int = 8181) -> str:
-    """确保 Chrome 在线，返回 cdp_url。Caido 未运行时直连启动（无代理）。"""
+def ensure_chrome(target: str, port: int = 9222, burp_port: int = 8080) -> str:
+    """确保 Chrome 在线，返回 cdp_url。Burp 未运行时直连启动（无代理）。"""
     if is_chrome_running(port):
         cdp_url = f"http://localhost:{port}"
         print(f"[chrome] 已在线: {cdp_url}", file=sys.stderr)
     else:
-        launch_chrome(port, caido_port)
+        launch_chrome(port, burp_port)
         cdp_url = wait_for_chrome(port)
         print(f"[chrome] 就绪: {cdp_url}", file=sys.stderr)
 
@@ -126,11 +126,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chrome 单实例管理")
     parser.add_argument("--target", required=True, help="目标名")
     parser.add_argument("--port", type=int, default=9222, help="CDP 端口（默认 9222）")
-    parser.add_argument("--caido-port", type=int, default=int(os.environ.get("CAIDO_PORT", "8181")))
+    parser.add_argument("--burp-port", type=int, default=int(os.environ.get("BURP_PORT", "8080")))
     args = parser.parse_args()
 
     try:
-        cdp_url = ensure_chrome(args.target, args.port, args.caido_port)
+        cdp_url = ensure_chrome(args.target, args.port, args.burp_port)
         print(cdp_url)  # stdout 供调用方读取
     except (FileNotFoundError, TimeoutError) as e:
         print(f"[error] {e}", file=sys.stderr)

@@ -24,16 +24,6 @@
 			"args": [
 				"mcp"
 			]
-		},
-		"caido": {
-			"command": "E:\\SRC挖掘\\SRC\\.venv\\Scripts\\python.exe",
-			"args": [
-				"E:\\SRC挖掘\\SRC\\TOOLS\\caido_mcp.py"
-			],
-			"env": {
-				"CAIDO_API_KEY": "DB1VuT+JX49pfgxoYWx50LU9BJp+/KBa5klH7QqfSgFbWIkFpx0HK/UbnrfGpjyAvtcERu7jLMlNBh7rktoc3g==.Kv2c07kS8E8Y/QJfQ5y3g5JN/5u2PXq3S/EulVQi4do=",
-				"CAIDO_URL": "http://127.0.0.1:8181/graphql"
-			}
 		}
 	}
 }
