@@ -8,7 +8,7 @@ import pytest
 
 
 def test_parse_surface_urls_filters_same_domain():
-    from TOOLS.browser_auth import parse_surface_urls
+    from TOOLS.auth.browser_auth import parse_surface_urls
     raw = [
         {"url": "https://example.com/dashboard", "title": "Dashboard"},
         {"url": "https://example.com/settings", "title": "Settings"},
@@ -24,7 +24,7 @@ def test_parse_surface_urls_filters_same_domain():
 
 
 def test_parse_surface_urls_filters_static_assets():
-    from TOOLS.browser_auth import parse_surface_urls
+    from TOOLS.auth.browser_auth import parse_surface_urls
     raw = [
         {"url": "https://example.com/page", "title": "Page"},
         {"url": "https://example.com/style.css", "title": ""},
@@ -54,7 +54,7 @@ def test_write_surface_urls_to_db():
     conn.commit()
     conn.close()
 
-    from TOOLS.browser_auth import write_surface_urls_to_db
+    from TOOLS.auth.browser_auth import write_surface_urls_to_db
     urls = [
         {"url": "https://example.com/dashboard", "title": "Dashboard"},
         {"url": "https://example.com/admin", "title": "Admin"},
@@ -86,7 +86,7 @@ def test_write_cookies_to_db():
     conn.commit()
     conn.close()
 
-    from TOOLS.browser_auth import write_cookies_to_db
+    from TOOLS.auth.browser_auth import write_cookies_to_db
     cookies = [
         {"name": "session", "value": "abc123", "domain": "example.com", "path": "/"},
         {"name": "csrf", "value": "xyz", "domain": "example.com", "path": "/"},
