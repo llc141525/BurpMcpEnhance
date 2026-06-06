@@ -13,6 +13,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import uuid as _uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -138,18 +139,8 @@ def parse_mmx_output(raw: str) -> dict | None:
     return None
 
 
-def next_sp_id(conn: sqlite3.Connection, prefix: str = "SP-JA") -> str:
-    row = conn.execute(
-        "SELECT id FROM suspicious_points WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
-        (f"{prefix}-%",),
-    ).fetchone()
-    num = 1
-    if row:
-        try:
-            num = int(row[0].split("-")[-1]) + 1
-        except ValueError:
-            pass
-    return f"{prefix}-{num:03d}"
+def new_sp_id(prefix: str = "SP-JA") -> str:
+    return f"{prefix}-{_uuid.uuid4().hex[:8]}"
 
 
 def write_findings_to_db(conn: sqlite3.Connection, js_url: str, findings: dict, id_prefix: str = "SP-JA") -> int:
@@ -158,7 +149,7 @@ def write_findings_to_db(conn: sqlite3.Connection, js_url: str, findings: dict, 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for ep in findings.get("api_endpoints", []):
-        sp_id = next_sp_id(conn, id_prefix)
+        sp_id = new_sp_id(id_prefix)
         conn.execute(
             "INSERT OR IGNORE INTO suspicious_points "
             "(id, url, param, method, test_type, evidence, source, risk, test_status, created_at) "
@@ -175,7 +166,7 @@ def write_findings_to_db(conn: sqlite3.Connection, js_url: str, findings: dict, 
         count += conn.execute("SELECT changes()").fetchone()[0]
 
     for secret in findings.get("hardcoded_secrets", []):
-        sp_id = next_sp_id(conn, id_prefix)
+        sp_id = new_sp_id(id_prefix)
         evidence = f"{secret.get('name', '?')}={secret.get('value', '?')} (type={secret.get('type', '?')}) in {js_url}"
         conn.execute(
             "INSERT OR IGNORE INTO suspicious_points "
@@ -186,7 +177,7 @@ def write_findings_to_db(conn: sqlite3.Connection, js_url: str, findings: dict, 
         count += conn.execute("SELECT changes()").fetchone()[0]
 
     for route in findings.get("internal_routes", []):
-        sp_id = next_sp_id(conn, id_prefix)
+        sp_id = new_sp_id(id_prefix)
         conn.execute(
             "INSERT OR IGNORE INTO suspicious_points "
             "(id, url, test_type, evidence, source, risk, test_status, created_at) "

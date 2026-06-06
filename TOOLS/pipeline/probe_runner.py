@@ -29,6 +29,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import uuid as _uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -57,19 +58,8 @@ FRAMEWORK_TAGS = {
 HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "HEAD", "TRACE"]
 
 
-def next_sp_id(conn: sqlite3.Connection, prefix: str = "SP-PR") -> str:
-    rows = conn.execute(
-        "SELECT id FROM suspicious_points WHERE id LIKE ? ORDER BY id DESC LIMIT 1",
-        (f"{prefix}-%",),
-    ).fetchone()
-    if rows:
-        try:
-            num = int(rows[0].split("-")[-1]) + 1
-        except ValueError:
-            num = 1
-    else:
-        num = 1
-    return f"{prefix}-{num:03d}"
+def new_sp_id(prefix: str = "SP-PR") -> str:
+    return f"{prefix}-{_uuid.uuid4().hex[:8]}"
 
 
 def write_sp(
@@ -82,7 +72,7 @@ def write_sp(
     reasoning: str,
     risk: str = "Medium",
 ) -> str:
-    sp_id = next_sp_id(conn)
+    sp_id = new_sp_id()
     conn.execute(
         """INSERT INTO suspicious_points
            (id, url, param, method, test_type, evidence, source, reasoning, risk, test_status, created_at)
