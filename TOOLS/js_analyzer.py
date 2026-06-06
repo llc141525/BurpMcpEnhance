@@ -84,14 +84,27 @@ def score_js_url(url: str) -> int:
 
 
 def fetch_js_content(url: str, timeout: int = 15) -> str | None:
-    try:
-        import requests  # noqa: PLC0415
+    import time
 
-        resp = requests.get(url, timeout=timeout, verify=False)  # noqa: S501
-        if resp.status_code == 200:
-            return resp.text
-    except Exception as exc:
-        print(f"  [warn] fetch 失败 {url}: {exc}", file=sys.stderr)
+    import requests  # noqa: PLC0415
+
+    for attempt, delay in enumerate((0, 1, 2)):
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = requests.get(url, timeout=timeout, verify=False)  # noqa: S501
+            if resp.status_code == 200:
+                from utils.waf_rotate import is_waf_blocked  # noqa: PLC0415
+
+                if is_waf_blocked(resp.status_code, resp.text[:2000]):
+                    print(f"  [warn] WAF 拦截 JS fetch: {url}", file=sys.stderr)
+                    return None
+                return resp.text
+            if resp.status_code in (404, 410):
+                return None  # permanently gone — no retry
+        except Exception as exc:
+            if attempt == 2:
+                print(f"  [warn] fetch 失败 {url}: {exc}", file=sys.stderr)
     return None
 
 
