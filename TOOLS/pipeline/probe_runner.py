@@ -35,6 +35,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
+from db.cookie_helper import get_auth_cookie_header  # noqa: E402
+
 # nuclei tags 与框架指纹的映射
 FRAMEWORK_TAGS = {
     "struts": "apache,struts",
@@ -106,7 +109,7 @@ def write_sp(
     return sp_id
 
 
-def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
+def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None, cookie_header: str | None = None) -> int:
     """测试非标准 HTTP 方法，响应与 GET 差异时写 SP。"""
     import urllib.request
 
@@ -119,6 +122,8 @@ def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
 
             req = urllib.request.Request(url, method=method)
             req.add_header("User-Agent", "Mozilla/5.0")
+            if cookie_header:
+                req.add_header("Cookie", cookie_header)
             ctx = None
             if proxies:
                 import urllib.request as ur
@@ -148,7 +153,7 @@ def mode_methods(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
     return added
 
 
-def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
+def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None, cookie_header: str | None = None) -> int:
     """arjun 参数发现，写入发现的参数。"""
     python_exe = "python3.14"
     try:
@@ -160,6 +165,8 @@ def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
         out_file = f.name
 
     cmd = [python_exe, "-m", "arjun", "-u", url, "-oJ", out_file, "-q"]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
 
     env = os.environ.copy()
     if proxy:
@@ -197,7 +204,7 @@ def mode_params(url: str, conn: sqlite3.Connection, proxy: str | None) -> int:
     return added
 
 
-def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
+def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None, cookie_header: str | None = None) -> int:
     """nuclei 扫描，发现写 SP。"""
     if not shutil.which("nuclei"):
         sys.exit("[error] nuclei 未安装")
@@ -223,6 +230,8 @@ def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
         "-c",
         "5",
     ]
+    if cookie_header:
+        cmd += ["-H", f"Cookie: {cookie_header}"]
     print(f"[nuclei] {url} (tags={tag_arg})")
     try:
         subprocess.run(cmd, check=False, timeout=180)
@@ -280,7 +289,7 @@ def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
     return added
 
 
-def batch_params(conn: sqlite3.Connection, limit: int, proxy: str | None) -> int:
+def batch_params(conn: sqlite3.Connection, limit: int, proxy: str | None, cookie_header: str | None = None) -> int:
     rows = conn.execute(
         """SELECT url FROM pages
            WHERE status='visited'
@@ -293,7 +302,7 @@ def batch_params(conn: sqlite3.Connection, limit: int, proxy: str | None) -> int
     ).fetchall()
     added = 0
     for row in rows:
-        added += mode_params(row["url"], conn, proxy)
+        added += mode_params(row["url"], conn, proxy, cookie_header)
     return added
 
 
@@ -311,11 +320,18 @@ def main() -> None:
     conn = connect(db_path)
     total_added = 0
 
+    # 获取认证 Cookie
+    seed_row = conn.execute("SELECT seed_url FROM scan_state WHERE id=1").fetchone()
+    seed_domain = seed_row[0] if seed_row and seed_row[0] else ""
+    cookie_header = get_auth_cookie_header(str(db_path), seed_domain)
+    if cookie_header:
+        print(f"[probe_runner] 带认证 Cookie ({len(cookie_header.split(';'))} 条)")
+
     if args.mode == "params":
         if args.batch:
-            total_added = batch_params(conn, args.batch, args.proxy)
+            total_added = batch_params(conn, args.batch, args.proxy, cookie_header)
         elif args.url:
-            total_added = mode_params(args.url, conn, args.proxy)
+            total_added = mode_params(args.url, conn, args.proxy, cookie_header)
         else:
             sys.exit("[error] params 模式需要 --url 或 --batch")
 
@@ -339,12 +355,12 @@ def main() -> None:
                     if fw in detected:
                         tag_parts.append(tag)
                 tags = ",".join(set(tag_parts)) if tag_parts else None
-        total_added = mode_nuclei(url, conn, tags)
+        total_added = mode_nuclei(url, conn, tags, cookie_header)
 
     elif args.mode == "methods":
         if not args.url:
             sys.exit("[error] methods 模式需要 --url")
-        total_added = mode_methods(args.url, conn, args.proxy)
+        total_added = mode_methods(args.url, conn, args.proxy, cookie_header)
 
     conn.close()
     print(f"\n=== probe_runner ({args.mode}) ===")
