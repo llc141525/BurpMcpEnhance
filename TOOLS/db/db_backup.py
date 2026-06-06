@@ -16,7 +16,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # db/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 DEFAULT_BACKUP_DIR = DBS_DIR / ".backups"
 

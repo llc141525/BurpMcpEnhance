@@ -33,9 +33,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
-
-DEFAULT_DB = os.path.expandvars(r"E:\SRC挖掘\SRC\.claude\skills\stealth-scanner\scanner.db")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # db/ → TOOLS/ → SRC/
+DBS_DIR = _PROJECT_ROOT / "dbs"
+DEFAULT_DB = str(_PROJECT_ROOT / ".claude" / "skills" / "stealth-scanner" / "scanner.db")
 
 
 def connect(db_path):

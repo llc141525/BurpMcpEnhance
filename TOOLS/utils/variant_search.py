@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # utils/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 
 # 漏洞类型 → 搜索策略

@@ -15,7 +15,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # db/ → TOOLS/ → SRC/
 LOG_FILE = PROJECT_ROOT / ".session-log.jsonl"
 
 

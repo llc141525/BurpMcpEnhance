@@ -18,7 +18,7 @@ import urllib3
 
 urllib3.disable_warnings()
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # db/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 
 CLASH_PROXY = "http://127.0.0.1:9870"

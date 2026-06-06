@@ -20,7 +20,7 @@ import urllib3
 
 urllib3.disable_warnings()
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/ → TOOLS/ → SRC/
 DBS_DIR = PROJECT_ROOT / "dbs"
 BROWSER_PROFILE = PROJECT_ROOT / ".browser-profile"
 
