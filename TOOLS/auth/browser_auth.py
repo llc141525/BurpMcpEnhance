@@ -89,17 +89,27 @@ def write_surface_urls_to_db(db_path: str, urls: list[dict]) -> int:
 
 
 def write_cookies_to_db(db_path: str, cookies: list[dict]) -> None:
-    """写 auth_sessions 表。"""
+    """写 auth_sessions 表，包括 expires_at。"""
+    from datetime import datetime, timezone
+
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     for c in cookies:
+        # Playwright expiry is Unix timestamp (float) or None
+        expires_at: str | None = None
+        raw_exp = c.get("expires")
+        if raw_exp and raw_exp > 0:
+            try:
+                expires_at = datetime.fromtimestamp(raw_exp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                expires_at = None
         conn.execute(
             """INSERT INTO auth_sessions
-               (token_type, token_name, token_value, domain, path, is_active, cookie_source)
-               VALUES ('cookie', ?, ?, ?, ?, 1, 'browser_use')
+               (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source)
+               VALUES ('cookie', ?, ?, ?, ?, ?, 1, 'browser_use')
                ON CONFLICT DO NOTHING""",
-            (c.get("name", ""), c.get("value", ""), c.get("domain", ""), c.get("path", "/")),
+            (c.get("name", ""), c.get("value", ""), c.get("domain", ""), c.get("path", "/"), expires_at),
         )
     conn.commit()
     conn.close()

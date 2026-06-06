@@ -3,6 +3,7 @@
 
 import sqlite3
 import sys
+from datetime import datetime
 from urllib.parse import urlparse
 
 
@@ -13,12 +14,34 @@ def _domain_matches(cookie_domain: str, request_host: str) -> bool:
     return rh == cd or rh.endswith("." + cd)
 
 
-def get_auth_cookies_dict(db_path: str, domain: str) -> dict[str, str]:
-    """返回匹配 domain 的所有活跃 cookies {name: value}，无匹配返回空 dict。"""
+def _path_matches(cookie_path: str, request_path: str) -> bool:
+    """检查 cookie path 是否是请求 path 的前缀。"""
+    cp = cookie_path or "/"
+    rp = request_path or "/"
+    if cp == "/":
+        return True
+    return rp == cp or rp.startswith(cp if cp.endswith("/") else cp + "/")
+
+
+def _is_expired(expires_at: str | None) -> bool:
+    """True if the cookie has a known expiry that is in the past."""
+    if not expires_at:
+        return False
+    try:
+        exp = datetime.fromisoformat(expires_at)
+        return exp < datetime.now()
+    except (ValueError, TypeError):
+        return False
+
+
+def get_auth_cookies_dict(db_path: str, domain: str, request_path: str = "/") -> dict[str, str]:
+    """返回匹配 domain + path 且未过期的活跃 cookies {name: value}，无匹配返回空 dict。"""
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT token_name, token_value, domain FROM auth_sessions WHERE is_active=1").fetchall()
+        rows = conn.execute(
+            "SELECT token_name, token_value, domain, path, expires_at FROM auth_sessions WHERE is_active=1"
+        ).fetchall()
         conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"[cookie_helper] DB error ({db_path}): {e}", file=sys.stderr)
@@ -29,14 +52,19 @@ def get_auth_cookies_dict(db_path: str, domain: str) -> dict[str, str]:
 
     result = {}
     for row in rows:
-        if row["domain"] and _domain_matches(row["domain"], host):
-            result[row["token_name"]] = row["token_value"]
+        if not row["domain"] or not _domain_matches(row["domain"], host):
+            continue
+        if not _path_matches(row["path"] or "/", request_path):
+            continue
+        if _is_expired(row["expires_at"]):
+            continue
+        result[row["token_name"]] = row["token_value"]
     return result
 
 
-def get_auth_cookie_header(db_path: str, domain: str) -> str | None:
+def get_auth_cookie_header(db_path: str, domain: str, request_path: str = "/") -> str | None:
     """返回 'name1=val1; name2=val2' 格式字符串，无匹配返回 None。"""
-    d = get_auth_cookies_dict(db_path, domain)
+    d = get_auth_cookies_dict(db_path, domain, request_path)
     if not d:
         return None
     return "; ".join(f"{k}={v}" for k, v in d.items())
