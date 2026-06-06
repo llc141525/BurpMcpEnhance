@@ -95,8 +95,18 @@ def fetch_js_content(url: str, timeout: int = 15) -> str | None:
     return None
 
 
-def call_mmx(js_content: str) -> str:
-    prompt = MMX_PROMPT.format(content=js_content[:30000])
+def call_mmx(js_content: str, js_url: str = "") -> str:
+    MAX_CHARS = 30000
+    truncated = len(js_content) > MAX_CHARS
+    if truncated:
+        print(
+            f"  [warn] JS 截断到 {MAX_CHARS}/{len(js_content)} chars — 分析结果可能不完整: {js_url}",
+            file=sys.stderr,
+        )
+    content = js_content[:MAX_CHARS]
+    if truncated:
+        content += "\n// [TRUNCATED]"
+    prompt = MMX_PROMPT.format(content=content)
     try:
         result = subprocess.run(  # noqa: S603
             ["mmx", "text", "chat"],  # noqa: S607
@@ -225,7 +235,7 @@ def analyze_batch(target: str, batch: int = 5) -> dict:
             results["details"].append(f"✗ {Path(js_url).name}  → fetch 失败")
             continue
 
-        raw = call_mmx(content)
+        raw = call_mmx(content, js_url)
         if not raw:
             TMP_DIR.mkdir(exist_ok=True)
             (TMP_DIR / f"js_mmx_fail_{abs(hash(js_url)) % 9999}.txt").write_text(
@@ -269,7 +279,7 @@ def main() -> None:
         conn = connect(db_path)
         content = fetch_js_content(args.url)
         if content:
-            raw = call_mmx(content)
+            raw = call_mmx(content, args.url)
             findings = parse_mmx_output(raw) or {}
             count = write_findings_to_db(conn, args.url, findings)
             print(f"[js_analyzer] 写入 {count} 条 SP")
