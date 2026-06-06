@@ -32,7 +32,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
+DBS_DIR = PROJECT_ROOT / "dbs"
 
 # nuclei tags 与框架指纹的映射
 FRAMEWORK_TAGS = {
@@ -231,12 +232,28 @@ def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
     added = 0
     if os.path.exists(out_file):
         with open(out_file, encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+            content = f.read().strip()
+        os.unlink(out_file)
+        if content:
+            try:
+                data = json.loads(content)
+                # v3.4+ outputs a JSON array; older versions output JSONL
+                findings = data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                # fallback: try JSONL line by line
+                findings = []
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        findings.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+            for finding in findings:
+                if not isinstance(finding, dict):
                     continue
                 try:
-                    finding = json.loads(line)
                     matched_url = finding.get("matched-at", url)
                     template_id = finding.get("template-id", "unknown")
                     severity = finding.get("info", {}).get("severity", "medium").title()
@@ -257,9 +274,8 @@ def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None) -> int:
                     )
                     print(f"  [+] {severity} {template_id} @ {matched_url} ({sp_id})")
                     added += 1
-                except json.JSONDecodeError:
-                    pass
-        os.unlink(out_file)
+                except Exception as e:
+                    print(f"  [warn] 处理 finding 失败: {e}")
 
     return added
 

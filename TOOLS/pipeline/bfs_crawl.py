@@ -24,7 +24,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
+DBS_DIR = PROJECT_ROOT / "dbs"
 
 JS_EXT_RE = re.compile(r"\.js(\?.*)?$", re.IGNORECASE)
 SKIP_EXT_RE = re.compile(
@@ -98,7 +99,7 @@ def run_katana(seed_urls: list[str], depth: int, max_pages: int) -> list[str]:
         "-ef",
         "woff,css,png,svg,jpg,jpeg,gif,ico,ttf,eot",  # exclude extensions
         "-kf",
-        "robotstxt,sitemapxml",  # known files
+        "all",  # known files (all = robotstxt+sitemapxml)
         "-jc",  # JS crawling
         "-jsl",  # JS parsing
         "-timeout",

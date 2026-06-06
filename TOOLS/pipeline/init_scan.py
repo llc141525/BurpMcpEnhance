@@ -24,7 +24,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-DBS_DIR = Path(os.path.expandvars(r"E:\SRC挖掘\SRC\dbs"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # pipeline/ → TOOLS/ → SRC/
+DBS_DIR = PROJECT_ROOT / "dbs"
 
 LOGIN_KEYWORDS = re.compile(r"(login|signin|sign-in|auth|passport|sso|oauth|账号|登录|验证|portal)", re.IGNORECASE)
 AUTH_STATUS_CODES = {302, 401, 403}
