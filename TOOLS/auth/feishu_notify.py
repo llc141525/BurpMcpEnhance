@@ -82,7 +82,11 @@ def _poll_for_reply(chat_id: str, timeout: int = POLL_TIMEOUT) -> str | None:
         time.sleep(POLL_INTERVAL)
         for m in _lark_get_messages(chat_id):
             if m.get("message_id") not in baseline_ids:
-                return m.get("content", "").strip()
+                try:
+                    content = json.loads(m.get("body", {}).get("content", "{}"))
+                    return content.get("text", "").strip()
+                except (json.JSONDecodeError, AttributeError):
+                    return str(m.get("body", {}).get("content", "")).strip()
     return None
 
 
