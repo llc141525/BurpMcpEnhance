@@ -7,7 +7,7 @@ exclude = ["tmp/ad-hoc/**", "TOOLS/android/**"]
 select = ["E", "F", "I", "B", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"TOOLS/tests/**" = ["S101"]
+"TOOLS/tests/**" = ["S101", "E402", "E741"]
 "TOOLS/auth/captcha_bypass.py" = ["S311", "S110", "S112"]
 "TOOLS/pipeline/scrapling_fetch.py" = ["S110", "S112"]
 "TOOLS/db/db_query.py" = ["S608"]

@@ -13,6 +13,7 @@
 """
 
 import argparse
+import os
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +22,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent  # TOOLS/ → SRC/
 TOOLS_DIR = Path(__file__).resolve().parent
 PIPELINE_DIR = TOOLS_DIR / "pipeline"
+
+# 优先用 uv venv Python（含 browser-use 等依赖），fallback 到当前解释器
+_venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+PYTHON = str(_venv_python) if _venv_python.exists() else sys.executable
 
 sys.path.insert(0, str(TOOLS_DIR))
 from db.db_utils import connect, find_db  # noqa: E402
@@ -46,6 +51,26 @@ def get_sp_count(conn: sqlite3.Connection) -> int:
     return row[0] if row else 0
 
 
+def needs_relogin(sessions: list[dict]) -> bool:
+    """True 表示所有活跃 session 均已过期或无 session，需要重新登录。"""
+    from datetime import datetime
+
+    active = [s for s in sessions if s.get("is_active")]
+    if not active:
+        return True
+    now = datetime.now()
+    for s in active:
+        exp = s.get("expires_at")
+        if not exp:
+            return False  # 无过期时间视为永久有效
+        try:
+            if datetime.strptime(exp, "%Y-%m-%d %H:%M:%S") > now:
+                return False
+        except ValueError:
+            return False  # 格式异常视为有效
+    return True
+
+
 # ── Output ────────────────────────────────────────────────────────────────────
 
 
@@ -56,13 +81,56 @@ def print_tag(tag: str, lines: list[str]) -> None:
     print()
 
 
+# ── Pure decision / formatting functions (testable without subprocess) ────────
+
+
+def spider_next_phase(queue_count: int) -> str | None:
+    """队列耗尽 → 'probe'，否则 None（继续 spider）。"""
+    return "probe" if queue_count == 0 else None
+
+
+def probe_next_phase(new_sp: int) -> str | None:
+    """无新 SP → 'brute'，否则 None（继续展示 SP）。"""
+    return "brute" if new_sp == 0 else None
+
+
+def build_spider_summary(
+    new_pages: int,
+    new_js: int,
+    queue: int,
+    js_lines: list[str],
+    new_sp: int,
+) -> list[str]:
+    """构建 SPIDER_BATCH / PHASE_TRANSITION 的摘要行列表。"""
+    summary = [
+        f"新增页面: +{new_pages}    JS 文件: +{new_js}    队列剩余: {queue}",
+    ]
+    if js_lines:
+        summary.append("JS 分析:")
+        summary.extend(f"  {line}" for line in js_lines[:8])
+    if new_sp:
+        summary.append(f"新增 SP (js_analysis): {new_sp} 条")
+    return summary
+
+
+def build_auth_barrier_lines(target: str, login_url: str | None) -> list[str]:
+    """构建 AUTH_BARRIER 标签的正文行列表。"""
+    url_display = login_url if login_url else "（未知）"
+    return [
+        f"登录页: {url_display}",
+        "操作: 通过 Burp 手动登录，成功后写入 auth_sessions 表，然后运行:",
+        f'  python TOOLS/db/db_query.py --target "{target}" '
+        "\"UPDATE scan_state SET phase='auth_ready' WHERE id=1\" --write",
+    ]
+
+
 # ── Phase handlers ────────────────────────────────────────────────────────────
 
 
 def handle_init(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
     print("[run_scan] phase=init → 运行 init_scan.py ...")
     subprocess.run(  # noqa: S603
-        [sys.executable, str(PIPELINE_DIR / "init_scan.py"), "--target", target],
+        [PYTHON, str(PIPELINE_DIR / "init_scan.py"), "--target", target],
         timeout=180,
         check=False,
     )
@@ -72,16 +140,8 @@ def handle_init(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     if new_phase == "auth_pending":
         url_row = conn.execute("SELECT url FROM pages WHERE status='queued' AND depth=0 LIMIT 1").fetchone()
-        login_url = url_row[0] if url_row else "（未知）"
-        print_tag(
-            "AUTH_BARRIER",
-            [
-                f"登录页: {login_url}",
-                "操作: 通过 Burp 手动登录，成功后写入 auth_sessions 表，然后运行:",
-                f'  python TOOLS/db/db_query.py --target "{target}" '
-                "\"UPDATE scan_state SET phase='spider' WHERE id=1\" --write",
-            ],
-        )
+        login_url = url_row[0] if url_row else None
+        print_tag("AUTH_BARRIER", build_auth_barrier_lines(target, login_url))
         return
 
     set_phase(conn, "spider")
@@ -101,7 +161,7 @@ def handle_spider(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
     before_js = conn.execute("SELECT count(*) FROM js_files").fetchone()[0]
 
     subprocess.run(  # noqa: S603
-        [sys.executable, str(PIPELINE_DIR / "bfs_crawl.py"), "--target", target, "--depth", "3"],
+        [PYTHON, str(PIPELINE_DIR / "bfs_crawl.py"), "--target", target, "--depth", "3"],
         timeout=300,
         check=False,
     )
@@ -112,7 +172,7 @@ def handle_spider(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     print("[run_scan] → 运行 js_analyzer.py (batch=5) ...")
     js_result = subprocess.run(  # noqa: S603
-        [sys.executable, str(TOOLS_DIR / "js_analyzer.py"), "--target", target, "--batch", "5"],
+        [PYTHON, str(TOOLS_DIR / "js_analyzer.py"), "--target", target, "--batch", "5"],
         capture_output=True,
         text=True,
         timeout=120,
@@ -124,18 +184,12 @@ def handle_spider(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
         "SELECT count(*) FROM suspicious_points WHERE source='js_analysis' AND test_status='untested'"
     ).fetchone()[0]
 
-    summary = [
-        f"新增页面: +{after_pages - before_pages}    JS 文件: +{after_js - before_js}    队列剩余: {queue}",
-    ]
-    if js_lines:
-        summary.append("JS 分析:")
-        summary.extend(f"  {line}" for line in js_lines[:8])
-    if new_sp:
-        summary.append(f"新增 SP (js_analysis): {new_sp} 条")
+    summary = build_spider_summary(after_pages - before_pages, after_js - before_js, queue, js_lines, new_sp)
 
-    if queue == 0:
-        set_phase(conn, "probe")
-        summary.append("→ 队列耗尽，切换至 probe phase")
+    next_phase = spider_next_phase(queue)
+    if next_phase:
+        set_phase(conn, next_phase)
+        summary.append(f"→ 队列耗尽，切换至 {next_phase} phase")
         print_tag("PHASE_TRANSITION", summary)
     else:
         print_tag("SPIDER_BATCH", summary)
@@ -147,7 +201,7 @@ def handle_probe(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     subprocess.run(  # noqa: S603
         [
-            sys.executable,
+            PYTHON,
             str(PIPELINE_DIR / "probe_runner.py"),
             "--target",
             target,
@@ -163,7 +217,8 @@ def handle_probe(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
     after_sp = get_sp_count(conn)
     new_sp = after_sp - before_sp
 
-    if new_sp > 0:
+    next_phase = probe_next_phase(new_sp)
+    if next_phase is None:
         rows = conn.execute(
             "SELECT id, method, url, param, test_type, risk FROM suspicious_points "
             "WHERE test_status='untested' ORDER BY id DESC LIMIT 10"
@@ -172,8 +227,8 @@ def handle_probe(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
         print_tag("NEW_SUSPICIOUS_POINTS", sp_lines + ["→ 发送高风险 SP 给 vuln-review skill 验证"])
         return
 
-    set_phase(conn, "brute")
-    print_tag("PHASE_TRANSITION", ["probe → brute    无新可疑点，进入目录爆破"])
+    set_phase(conn, next_phase)
+    print_tag("PHASE_TRANSITION", [f"probe → {next_phase}    无新可疑点，进入目录爆破"])
 
 
 def handle_brute(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
@@ -192,7 +247,7 @@ def handle_brute(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     print(f"[run_scan] phase=brute → 运行 brutescan.py on {seed_url} ...")
     subprocess.run(  # noqa: S603
-        [sys.executable, str(PIPELINE_DIR / "brutescan.py"), "-u", seed_url, "-n", "200"],
+        [PYTHON, str(PIPELINE_DIR / "brutescan.py"), "-u", seed_url, "-n", "200"],
         timeout=600,
         check=False,
     )
@@ -200,16 +255,28 @@ def handle_brute(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
     print_tag("PHASE_TRANSITION", ["brute → spider    目录爆破完成"])
 
 
-def handle_auth_pending(conn: sqlite3.Connection) -> None:
-    print_tag(
-        "AUTH_BARRIER",
-        [
-            "当前 phase=auth_pending，等待操作员完成登录",
-            "完成后执行:",
-            '  python TOOLS/db/db_query.py --target "目标名" '
-            "\"UPDATE scan_state SET phase='spider' WHERE id=1\" --write",
-        ],
-    )
+def handle_auth_pending(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    """先尝试 browser_auth.py AI 自动登录；失败或环境不足时降级为 [AUTH_BARRIER]。"""
+    url_row = conn.execute("SELECT url FROM pages WHERE status='queued' AND depth=0 LIMIT 1").fetchone()
+    login_url = url_row[0] if url_row else None
+
+    has_deepseek = bool(os.environ.get("DEEPSEEK_API"))
+    has_feishu = bool(os.environ.get("FEISHU_CHAT_ID"))
+
+    if has_deepseek and has_feishu and login_url:
+        print(f"[run_scan] phase=auth_pending → browser_auth.py on {login_url}")
+        result = subprocess.run(  # noqa: S603
+            [PYTHON, str(TOOLS_DIR / "auth" / "browser_auth.py"), "--target", target, "--url", login_url],
+            timeout=360,
+            check=False,
+        )
+        if result.returncode == 0:
+            # browser_auth.py 已将 phase 设为 auth_ready，下次调用 run_scan 继续
+            print_tag("PHASE_TRANSITION", ["auth_pending → auth_ready    AI 登录成功"])
+            return
+
+    # browser_auth 失败或环境不足 → 降级为手动登录指南
+    print_tag("AUTH_BARRIER", build_auth_barrier_lines(target, login_url))
 
 
 def handle_auth_ready(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
@@ -221,7 +288,7 @@ def handle_auth_ready(target: str, db_path: Path, conn: sqlite3.Connection) -> N
 def handle_auth_explore(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
     print("[run_scan] phase=auth_explore → 运行 auth_explore.py ...")
     result = subprocess.run(  # noqa: S603
-        [sys.executable, str(TOOLS_DIR / "auth" / "auth_explore.py"), "--target", target],
+        [PYTHON, str(TOOLS_DIR / "auth" / "auth_explore.py"), "--target", target],
         timeout=300,
         check=False,
     )
@@ -264,15 +331,11 @@ def main() -> None:
     print(f"[run_scan] 目标: {args.target}  DB: {db_path.name}  phase: {phase}")
 
     if phase == "auth_pending":
-        handle_auth_pending(conn)
+        handle_auth_pending(args.target, db_path, conn)
     elif phase == "auth_timeout":
-        print_tag(
-            "AUTH_BARRIER",
-            [
-                "登录超时，请重新尝试手动登录",
-                "完成后执行: UPDATE scan_state SET phase='auth_ready' WHERE id=1",
-            ],
-        )
+        # 重置为 auth_pending 并重试 AI 登录
+        set_phase(conn, "auth_pending")
+        handle_auth_pending(args.target, db_path, conn)
     elif phase == "chrome_error":
         print_tag(
             "AUTH_BARRIER",
