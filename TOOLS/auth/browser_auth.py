@@ -11,11 +11,12 @@
 环境变量:
   DEEPSEEK_API        DeepSeek API key（必填）
   FEISHU_CHAT_ID      飞书 chat_id（必填）
-  CAIDO_PORT          Caido 代理端口（默认 8181）
+  BURP_PROXY          Burp 代理（默认 127.0.0.1:8080，Chrome 通过 CDP 连接，无需此变量）
 
 注意: browser-use 实际 API:
   - BrowserConfig 不存在，使用 BrowserSession(cdp_url=..., headless=...)
-  - ChatAnthropic 从 browser_use 导入（内置 LLM 适配层）
+  - 使用 browser_use.llm.deepseek.chat.ChatDeepSeek（OpenAI 兼容端点，无 thinking 模式冲突）
+  - ChatAnthropic 的 /anthropic 端点会触发 thinking mode，与 tool_choice 冲突，不要使用
   - Agent 无 max_steps 参数，使用 max_failures 控制
 """
 
@@ -115,6 +116,20 @@ def write_cookies_to_db(db_path: str, cookies: list[dict]) -> None:
     conn.close()
 
 
+def write_credentials_to_db(db_path: str, username: str, password: str) -> None:
+    """写 username/password 到最近一条 browser_use cookie 记录。"""
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute(
+        "UPDATE auth_sessions SET username=?, password=? "
+        "WHERE id=(SELECT MAX(id) FROM auth_sessions WHERE cookie_source='browser_use')",
+        (username, password),
+    )
+    conn.commit()
+    conn.close()
+
+
 def set_phase(db_path: str, phase: str) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE scan_state SET phase=? WHERE id=1", (phase,))
@@ -140,20 +155,20 @@ async def run_browser_auth(
       - ChatAnthropic 从 browser_use 导入（内置适配，非 langchain_anthropic）
       - Agent 无 max_steps 参数
     """
-    from browser_use import Agent, BrowserSession, ChatAnthropic, Controller
+    from browser_use import Agent, BrowserSession, Controller
+    from browser_use.llm.deepseek.chat import ChatDeepSeek
 
     chat_id = os.environ.get("FEISHU_CHAT_ID", "")
     if not chat_id:
         print("[error] 环境变量 FEISHU_CHAT_ID 未设置", file=sys.stderr)
         return False
 
-    # DeepSeek thinking mode conflicts with tool_choice — disable via model_kwargs extra_body
-    llm = ChatAnthropic(
-        model="deepseek-v4-flash",
+    # 使用 ChatDeepSeek（OpenAI 兼容 /v1 端点）而非 ChatAnthropic：
+    # ChatAnthropic 走 /anthropic 端点时 DeepSeek 默认开启 thinking 模式，
+    # browser-use 发送 tool_choice 时 API 报 400。ChatDeepSeek 无此问题。
+    llm = ChatDeepSeek(
+        model="deepseek-chat",
         api_key=os.environ["DEEPSEEK_API"],
-        base_url="https://api.deepseek.com/anthropic",
-        timeout=60,
-        model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
     )
 
     browser_session = BrowserSession(
@@ -288,6 +303,8 @@ def main() -> None:
 
     if success:
         set_phase(db_path, "auth_ready")
+        if args.username:
+            write_credentials_to_db(db_path, args.username, args.password)
         print("[browser_auth] 登录成功，phase → auth_ready", file=sys.stderr)
     else:
         set_phase(db_path, "auth_timeout")
