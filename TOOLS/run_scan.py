@@ -71,6 +71,63 @@ def needs_relogin(sessions: list[dict]) -> bool:
     return True
 
 
+def ensure_session_valid(target: str, db_path: Path, conn: sqlite3.Connection) -> bool:
+    """検查 session 健康状态；已过期则尝试自动续期。返回 True 表示 session 有效。"""
+    has_auth = conn.execute("SELECT count(*) FROM auth_sessions WHERE cookie_source='browser_use'").fetchone()[0]
+    if not has_auth:
+        return True  # 无需认证的目标直接通过
+
+    subprocess.run(
+        [PYTHON, str(TOOLS_DIR / "db" / "auth_check.py"), "--target", target, "--update"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    rows = conn.execute(
+        "SELECT is_active, expires_at, username, password FROM auth_sessions "
+        "WHERE cookie_source='browser_use' ORDER BY id DESC LIMIT 5"
+    ).fetchall()
+    sessions = [{"is_active": r[0], "expires_at": r[1], "username": r[2], "password": r[3]} for r in rows]
+
+    if not needs_relogin(sessions):
+        return True
+
+    active_cred = next((s for s in sessions if s.get("username")), None)
+    if active_cred:
+        url_row = conn.execute("SELECT url FROM pages WHERE depth=0 LIMIT 1").fetchone()
+        login_url = url_row[0] if url_row else None
+        if login_url:
+            re_result = subprocess.run(  # noqa: S603
+                [
+                    PYTHON,
+                    str(TOOLS_DIR / "auth" / "browser_auth.py"),
+                    "--target",
+                    target,
+                    "--url",
+                    login_url,
+                    "--username",
+                    active_cred["username"],
+                    "--password",
+                    active_cred["password"],
+                ],
+                timeout=360,
+                check=False,
+            )
+            if re_result.returncode == 0:
+                print("[run_scan] Session 已续期")
+                return True
+
+    url_row = conn.execute("SELECT url FROM pages WHERE depth=0 LIMIT 1").fetchone()
+    login_url = url_row[0] if url_row else None
+    print_tag(
+        "AUTH_BARRIER",
+        ["会话已过期，无法自动续期", *build_auth_barrier_lines(target, login_url)],
+    )
+    return False
+
+
 # ── Output ────────────────────────────────────────────────────────────────────
 
 
@@ -156,6 +213,8 @@ def handle_init(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
 
 def handle_spider(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    if not ensure_session_valid(target, db_path, conn):
+        return
     print("[run_scan] phase=spider → 运行 bfs_crawl.py ...")
     before_pages = conn.execute("SELECT count(*) FROM pages").fetchone()[0]
     before_js = conn.execute("SELECT count(*) FROM js_files").fetchone()[0]
@@ -286,6 +345,8 @@ def handle_auth_ready(target: str, db_path: Path, conn: sqlite3.Connection) -> N
 
 
 def handle_auth_explore(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    if not ensure_session_valid(target, db_path, conn):
+        return
     print("[run_scan] phase=auth_explore → 运行 auth_explore.py ...")
     result = subprocess.run(  # noqa: S603
         [PYTHON, str(TOOLS_DIR / "auth" / "auth_explore.py"), "--target", target],
