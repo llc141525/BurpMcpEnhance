@@ -32,6 +32,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/ → TOOLS/ → SRC/
 _TOOLS_DIR = Path(__file__).resolve().parent.parent  # auth/ → TOOLS/
 sys.path.insert(0, str(_TOOLS_DIR))
+from auth.auth_state import capture_to_db  # noqa: E402
+
 DBS_DIR = PROJECT_ROOT / "dbs"
 TMP_DIR = PROJECT_ROOT / "tmp"
 
@@ -109,21 +111,31 @@ def write_cookies_to_db(db_path: str, cookies: list[dict]) -> None:
             """INSERT INTO auth_sessions
                (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source)
                VALUES ('cookie', ?, ?, ?, ?, ?, 1, 'browser_use')
-               ON CONFLICT DO NOTHING""",
+               ON CONFLICT(token_name, domain) DO UPDATE SET
+                 token_value=excluded.token_value,
+                 expires_at=excluded.expires_at,
+                 is_active=1,
+                 last_checked_at=datetime('now','localtime')""",
             (c.get("name", ""), c.get("value", ""), c.get("domain", ""), c.get("path", "/"), expires_at),
         )
     conn.commit()
     conn.close()
 
 
-def write_credentials_to_db(db_path: str, username: str, password: str) -> None:
-    """写 username/password 到最近一条 browser_use cookie 记录。"""
+def write_credentials_to_db(db_path: str, username: str, password: str, login_url: str = "") -> None:
+    """写 username/password 到 auth_credentials（供 session_manager 续期使用）。"""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    # 写 auth_credentials（含 login_url，session_manager 优先从这里取）
+    conn.execute(
+        "INSERT INTO auth_credentials (account_label, username, password, login_url) VALUES ('primary', ?, ?, ?)",
+        (username, password, login_url),
+    )
+    # 同时更新最近一条 is_active=1 的 cookie 行（向后兼容）
     conn.execute(
         "UPDATE auth_sessions SET username=?, password=? "
-        "WHERE id=(SELECT MAX(id) FROM auth_sessions WHERE cookie_source='browser_use')",
+        "WHERE id=(SELECT MAX(id) FROM auth_sessions WHERE is_active=1)",
         (username, password),
     )
     conn.commit()
@@ -140,6 +152,21 @@ def set_phase(db_path: str, phase: str) -> None:
 def find_db(target: str) -> str | None:
     matches = sorted(DBS_DIR.glob(f"{target}_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
     return str(matches[0]) if matches else None
+
+
+def persist_cdp_auth_state(target: str, db_path: str, cdp_url: str) -> bool:
+    """登录成功后统一捕获 cookies + storage token。"""
+    try:
+        counts = capture_to_db(target, db_path, cdp_url)
+        print(
+            f"[browser_auth] CDP auth state: cookies={counts.get('cookies', 0)} "
+            f"storage_tokens={counts.get('storage_tokens', 0)}",
+            file=sys.stderr,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[browser_auth] CDP auth state 捕获失败（非致命）: {e}", file=sys.stderr)
+        return False
 
 
 # ── Browser-use agent ─────────────────────────────────────────────────────────
@@ -203,7 +230,7 @@ async def run_browser_auth(
         else '提示 ask_feishu "请在浏览器中手动输入账号密码并登录"，等待跳转。'
     )
     task = f"""
-你是一个安全研究员，帮助测试员完成对 {target} 的登录并发现认证后的页面。
+你是一个安全研究员，帮助测试员完成对 {target} 的登录。
 
 步骤：
 1. 导航到登录页: {login_url}
@@ -221,13 +248,10 @@ async def run_browser_auth(
    - 若只需用户名/密码：{cred_step}
 4. 判断登录是否成功：当前页面 URL 已不再包含 "login"、"sso"、"passport"、"signin" 等关键词，
    或页面出现用户名/头像/个人中心等已登录标志，即视为登录成功。
-5. 登录成功后，收集当前页面所有可见链接和导航菜单项，点击展开各级菜单，
-   记录发现的 URL（不限于固定名称，任何认证后才能访问的页面都要记录）。
-6. 完成后输出 JSON（放在最后一行）：
-   {{"urls": [{{"url": "...", "title": "..."}}]}}
+5. 登录成功后立即输出 JSON（最后一行），然后结束任务，不要继续点击或导航：
+   {{"urls": []}}
 
-约束：不提交表单，不点击删除，不点击退出登录。如果任务已完成（已收集到 URL），
-直接输出 JSON 结束，不要重复操作。
+约束：不提交表单，不点击删除，不点击退出登录。登录成功即结束，不做任何额外探索。
 """
 
     try:
@@ -251,19 +275,7 @@ async def run_browser_auth(
                 file=sys.stderr,
             )
 
-        # Extract cookies via patchright CDP connection
-        try:
-            from patchright.async_api import async_playwright
-
-            async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(cdp_url)
-                context = browser.contexts[0] if browser.contexts else None
-                if context:
-                    cookies = await context.cookies()
-                    write_cookies_to_db(db_path, cookies)
-                    print(f"[browser_auth] 写入 {len(cookies)} 条 cookies", file=sys.stderr)
-        except Exception as cookie_err:
-            print(f"[browser_auth] cookie 提取失败（非致命）: {cookie_err}", file=sys.stderr)
+        persist_cdp_auth_state(target, db_path, cdp_url)
 
         return True
 
@@ -292,10 +304,9 @@ def main() -> None:
     if not db_path:
         sys.exit(f"[error] 找不到目标 DB: {args.target}")
 
-    conn = sqlite3.connect(db_path)
-    row = conn.execute("SELECT cdp_url FROM scan_state WHERE id=1").fetchone()
-    conn.close()
-    cdp_url = row[0] if row and row[0] else "http://localhost:9222"
+    from auth.chrome_manager import ensure_chrome  # noqa: PLC0415
+
+    cdp_url = ensure_chrome(args.target)
 
     TMP_DIR.mkdir(exist_ok=True)
 
@@ -304,7 +315,7 @@ def main() -> None:
     if success:
         set_phase(db_path, "auth_ready")
         if args.username:
-            write_credentials_to_db(db_path, args.username, args.password)
+            write_credentials_to_db(db_path, args.username, args.password, args.url)
         print("[browser_auth] 登录成功，phase → auth_ready", file=sys.stderr)
     else:
         set_phase(db_path, "auth_timeout")

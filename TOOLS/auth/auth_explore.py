@@ -15,11 +15,13 @@ import asyncio
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/→TOOLS/→SRC/
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
@@ -28,6 +30,10 @@ from db.db_utils import connect, find_db  # noqa: E402
 
 STATIC_TYPES = {"stylesheet", "image", "font", "media", "websocket", "manifest", "ping"}
 STATIC_EXT_RE = re.compile(r"\.(css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|mp4|mp3|pdf|zip)(\?.*)?$", re.I)
+
+# Hunt queue pre-filter: ID-like param names and numeric path segments
+_ID_PARAM_RE = re.compile(r"^(id|uid|user_?id|order_?id|oid|pid|tid|sid|no|num|code|sn)$", re.I)
+_NUMERIC_PATH_RE = re.compile(r"/\d{2,}(/|$|\?)")
 
 NAV_SELECTORS = [
     "nav a[href]",
@@ -43,8 +49,276 @@ NAV_SELECTORS = [
     ".layui-nav-item a[href]",
 ]
 
+UNSAFE_LABEL_RE = re.compile(
+    r"(logout|sign\s*out|exit|delete|remove|submit|save|confirm|pay|bind|unbind|"
+    r"退出|注销|删除|移除|提交|保存|确认|支付|绑定|解绑)",
+    re.I,
+)
+
+RESPONSE_URL_KEYS = {
+    "url",
+    "href",
+    "link",
+    "path",
+    "route",
+    "targetUrl",
+    "redirectUrl",
+    "appUrl",
+    "menuUrl",
+    "moduleUrl",
+    "iframeUrl",
+    "openUrl",
+}
+
+LABEL_KEYS = ("name", "title", "label", "text", "menuName", "appName", "moduleName")
+
+INLINE_ROUTE_PATTERNS = [
+    re.compile(r"window\.open\(\s*['\"]([^'\"]+)['\"]", re.I),
+    re.compile(r"location\.href\s*=\s*['\"]([^'\"]+)['\"]", re.I),
+    re.compile(r"router\.push\(\s*(?:\{\s*path\s*:\s*)?['\"]([^'\"]+)['\"]", re.I),
+    re.compile(r"navigate\(\s*['\"]([^'\"]+)['\"]", re.I),
+]
+
+DOM_CANDIDATE_SELECTOR = ",".join(
+    [
+        "a[href]",
+        "button",
+        "[role='button']",
+        "[role='menuitem']",
+        "[role='tab']",
+        "[onclick]",
+        "[data-url]",
+        "[data-href]",
+        "[data-route]",
+        "[data-path]",
+        "[data-to]",
+        "[data-link]",
+        "[data-src]",
+        "iframe[src]",
+        ".menu-item",
+        ".nav-item",
+        ".el-menu-item",
+        ".ant-menu-item",
+        ".layui-nav-item",
+        ".card",
+        ".el-card",
+        ".ant-card",
+    ]
+)
+
 
 # ── Pure functions (testable without browser) ─────────────────────────────────
+
+
+def is_unsafe_label(label: str) -> bool:
+    """Return True when a clickable label looks destructive/session-ending."""
+    return bool(label and UNSAFE_LABEL_RE.search(label))
+
+
+def normalize_candidate_url(value: str, seed_url: str) -> str | None:
+    """Normalize absolute, relative, and hash-route candidate values."""
+    raw = (value or "").strip()
+    if not raw or raw.lower().startswith(("javascript:", "mailto:", "tel:")):
+        return None
+    if raw == "#":
+        return None
+    if raw.startswith("#"):
+        base = seed_url.split("#", 1)[0]
+        return base + raw
+    normalized = urljoin(seed_url, raw)
+    parsed = urlparse(normalized)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", "", parsed.query, parsed.fragment))
+
+
+def _same_site_url(candidate_url: str, seed_url: str) -> bool:
+    candidate_host = urlparse(candidate_url).netloc
+    seed_host = urlparse(seed_url).netloc
+    if not candidate_host or not seed_host:
+        return False
+    return _site_domain(candidate_host) == _site_domain(seed_host)
+
+
+def extract_inline_route_literals(script: str) -> list[str]:
+    """Extract common inline/script navigation route literals."""
+    routes: list[str] = []
+    for pattern in INLINE_ROUTE_PATTERNS:
+        routes.extend(match.group(1) for match in pattern.finditer(script or ""))
+    return list(dict.fromkeys(routes))
+
+
+def _label_from_obj(obj: dict, fallback: str = "") -> str:
+    for key in LABEL_KEYS:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:60]
+    return fallback[:60]
+
+
+def extract_response_candidates(
+    payload,
+    seed_url: str,
+    source_url: str,
+    parent_label: str = "",
+) -> list[dict]:
+    """Extract framework-neutral navigation candidates from nested JSON payloads."""
+    candidates: list[dict] = []
+
+    def walk(node, inherited_label: str) -> None:
+        if isinstance(node, dict):
+            label = _label_from_obj(node, inherited_label)
+            for key, value in node.items():
+                if key in RESPONSE_URL_KEYS and isinstance(value, str):
+                    normalized = normalize_candidate_url(value, seed_url)
+                    if normalized and _same_site_url(normalized, seed_url) and not is_unsafe_label(label):
+                        candidates.append(
+                            {
+                                "kind": "response_url",
+                                "value": normalized,
+                                "label": label or normalized,
+                                "source": source_url,
+                                "framework_hint": "unknown",
+                            }
+                        )
+                else:
+                    walk(value, label)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, inherited_label)
+
+    walk(payload, parent_label)
+    seen: set[str] = set()
+    deduped = []
+    for candidate in candidates:
+        key = candidate["value"]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _candidate_prefix(value: str) -> str:
+    parsed = urlparse(value)
+    if not parsed.netloc:
+        return value[:80]
+    parts = [p for p in parsed.path.split("/") if p]
+    first = parts[0] if parts else ""
+    return f"{parsed.netloc}/{first}"
+
+
+class CandidateQueue:
+    """Bounded breadth-preserving candidate queue."""
+
+    def __init__(self, per_prefix_cap: int = 3, per_host_cap: int = 20):
+        self.per_prefix_cap = per_prefix_cap
+        self.per_host_cap = per_host_cap
+        self._seen: set[str] = set()
+        self._prefix_counts: dict[str, int] = defaultdict(int)
+        self._host_counts: dict[str, int] = defaultdict(int)
+        self._items: deque[dict] = deque()
+
+    def add(self, candidate: dict) -> bool:
+        value = candidate.get("value", "")
+        if not value or value in self._seen:
+            return False
+        parsed = urlparse(value)
+        host = parsed.netloc or candidate.get("kind", "unknown")
+        prefix = _candidate_prefix(value)
+        if self._host_counts[host] >= self.per_host_cap:
+            return False
+        if self._prefix_counts[prefix] >= self.per_prefix_cap:
+            return False
+        self._seen.add(value)
+        self._host_counts[host] += 1
+        self._prefix_counts[prefix] += 1
+        self._items.append(candidate)
+        return True
+
+    def extend(self, candidates: list[dict]) -> None:
+        for candidate in candidates:
+            self.add(candidate)
+
+    def pop(self) -> dict | None:
+        if not self._items:
+            return None
+        return self._items.popleft()
+
+    def items(self) -> list[dict]:
+        return list(self._items)
+
+
+def _framework_hint_from_attrs(attrs: dict) -> str:
+    text = " ".join(str(v) for v in attrs.values() if v).lower()
+    if "el-" in text:
+        return "vue"
+    if "ant-" in text:
+        return "react"
+    if "layui" in text:
+        return "layui"
+    if attrs.get("tag") == "iframe":
+        return "iframe"
+    return "unknown"
+
+
+def _candidate_from_attr_value(attr_value: str, label: str, seed_url: str, source: str, hint: str) -> dict | None:
+    normalized = normalize_candidate_url(attr_value, seed_url)
+    if not normalized or not _same_site_url(normalized, seed_url) or is_unsafe_label(label):
+        return None
+    return {"kind": "url", "value": normalized, "label": label or normalized, "source": source, "framework_hint": hint}
+
+
+def dom_attrs_to_candidates(attrs: dict, seed_url: str, source: str) -> list[dict]:
+    """Build URL/click candidates from a DOM attribute snapshot."""
+    label = (attrs.get("text") or attrs.get("aria") or attrs.get("title") or "").strip()[:60]
+    if is_unsafe_label(label):
+        return []
+    hint = _framework_hint_from_attrs(attrs)
+    candidates: list[dict] = []
+    for key in (
+        "href",
+        "dataUrl",
+        "dataHref",
+        "dataRoute",
+        "dataPath",
+        "dataTo",
+        "dataLink",
+        "dataSrc",
+        "src",
+        "formAction",
+    ):
+        value = attrs.get(key)
+        if isinstance(value, str):
+            candidate = _candidate_from_attr_value(value, label, seed_url, f"{source}:{key}", hint)
+            if candidate:
+                candidates.append(candidate)
+    onclick = attrs.get("onclick") or ""
+    for route in extract_inline_route_literals(onclick):
+        candidate = _candidate_from_attr_value(route, label, seed_url, f"{source}:onclick", hint)
+        if candidate:
+            candidates.append(candidate)
+    if not candidates and label:
+        fingerprint = json.dumps(
+            {
+                "text": label,
+                "role": attrs.get("role", ""),
+                "tag": attrs.get("tag", ""),
+                "className": attrs.get("className", ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        candidates.append(
+            {
+                "kind": "click",
+                "value": fingerprint,
+                "label": label,
+                "source": source,
+                "framework_hint": hint,
+            }
+        )
+    return candidates
 
 
 def _strip_www(host: str) -> str:
@@ -52,16 +326,27 @@ def _strip_www(host: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _site_domain(host: str) -> str:
+    """Best-effort same-site root for Chinese edu/gov/com second-level suffixes."""
+    clean = _strip_www(host.split(":")[0].lower())
+    parts = [p for p in clean.split(".") if p]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in {"edu.cn", "gov.cn", "com.cn", "net.cn", "org.cn"}:
+        return ".".join(parts[-3:])
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return clean
+
+
 def filter_api_requests(requests: list[dict], base_domain: str) -> list[dict]:
     """过滤：只保留同域 XHR/fetch，排除静态资源。"""
     result = []
-    base = _strip_www(base_domain.split(":")[0])
+    base = _site_domain(base_domain)
     for r in requests:
         if r.get("resource_type") not in ("xhr", "fetch"):
             continue
         url = r.get("url", "")
         try:
-            host = _strip_www(urlparse(url).netloc)
+            host = _strip_www(urlparse(url).netloc.split(":")[0])
         except Exception:  # noqa: S112,BLE001 — urlparse may raise on malformed URLs
             continue
         if not (host == base or host.endswith("." + base)):
@@ -100,9 +385,17 @@ def write_explore_results_to_db(
     sp_count = 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for req in api_requests:
-        sp_id = f"{sp_prefix}-{uuid.uuid4().hex[:8]}"
         params = req.get("params", [])
         context = req.get("nav_context", "")
+        url = req["url"]
+        method = req.get("method", "GET")
+        existing = conn.execute(
+            "SELECT id FROM suspicious_points WHERE url=? AND method=? AND test_type='auth_surface' LIMIT 1",
+            (url, method),
+        ).fetchone()
+        if existing:
+            continue
+        sp_id = f"{sp_prefix}-{uuid.uuid4().hex[:8]}"
         cur = conn.execute(
             """INSERT INTO suspicious_points
                (id, url, param, method, test_type, evidence, source, reasoning, risk, test_status, created_at)
@@ -110,9 +403,9 @@ def write_explore_results_to_db(
                ON CONFLICT(id) DO NOTHING""",
             (
                 sp_id,
-                req["url"],
+                url,
                 ", ".join(params) if params else "",
-                req.get("method", "GET"),
+                method,
                 f"认证后页面 [{context}] 发出的请求，params={params}",
                 f"认证用户操作触发的 API，存在 IDOR/越权/敏感数据暴露风险。来源: {context}",
                 now,
@@ -130,6 +423,140 @@ def write_explore_results_to_db(
 
     conn.commit()
     return {"sp": sp_count, "pages": page_count}
+
+
+# ── Hunt queue: pre-filter + mmx classification + write ──────────────────────
+
+
+def _is_hunt_candidate(req: dict) -> bool:
+    """Heuristic pre-filter: 值得做三层重放测试的请求，不依赖 URL pattern。"""
+    method = req.get("method", "GET").upper()
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return True
+    params = req.get("params", [])
+    if any(_ID_PARAM_RE.match(p) for p in params):
+        return True
+    path = urlparse(req.get("url", "")).path
+    if _NUMERIC_PATH_RE.search(path):
+        return True
+    if len(params) >= 2:  # GET with multiple params likely a data query
+        return True
+    return False
+
+
+def _classify_with_mmx(candidates: list[dict], tmp_dir: Path) -> list[dict]:
+    """用 mmx 对候选请求做业务意图分类。失败时返回空列表（降级：跳过写 hunt_queue）。"""
+    if not candidates:
+        return []
+
+    mmx_input = [
+        {
+            "idx": i,
+            "method": r.get("method", "GET"),
+            "url": r.get("url", ""),
+            "params": r.get("params", []),
+            "nav_context": r.get("nav_context", ""),
+            "has_body": bool(r.get("post_data")),
+        }
+        for i, r in enumerate(candidates)
+    ]
+
+    ts = datetime.now().strftime("%H%M%S")
+    input_file = tmp_dir / f"ae_classify_{ts}.json"
+    input_file.write_text(json.dumps(mmx_input, ensure_ascii=False), encoding="utf-8")
+
+    prompt = (
+        "你是 SRC 渗透测试助手，分析以下认证后浏览器自动触发的 XHR 请求，判断其业务价值。\n"
+        "nav_context 是触发该请求的导航项标签（如「学生管理>成绩查询」），是最强的业务语义信号。\n"
+        '输出 JSON 数组，每条: {"idx":<int>,"endpoint_type":"business_api|auth_login|auth_register|'
+        'auth_reset_password|auth_verify_code|low_value","business_intent":"一句话业务含义",'
+        '"risk_hint":"High|Medium|Low"}\n'
+        "low_value: 纯导航/字典/枚举/配置查询、无参GET、统计埋点\n"
+        "risk_hint=High: 含 id/uid/oid 参数 或 POST/DELETE/PUT 或涉及用户/订单/权限数据\n"
+        "返回纯 JSON 数组，无 markdown 围栏:\n"
+        f"{input_file.read_text(encoding='utf-8')}"
+    )
+
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["mmx", "text", "chat", "--output", "text", "--non-interactive", "--message", prompt],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        raw = result.stdout.strip()
+        try:
+            classified = json.loads(raw)
+        except json.JSONDecodeError:
+            start, end = raw.find("["), raw.rfind("]")
+            if start >= 0 and end > start:
+                classified = json.loads(raw[start : end + 1])
+            else:
+                print("[auth_explore] mmx 分类输出无法解析，已跳过 hunt_queue 写入", file=sys.stderr)
+                return []
+
+        idx_map = {item["idx"]: item for item in classified if isinstance(item, dict)}
+        results = []
+        for i, req in enumerate(candidates):
+            cls = idx_map.get(i, {})
+            if cls.get("endpoint_type", "low_value") == "low_value":
+                continue
+            results.append(
+                {
+                    **req,
+                    "endpoint_type": cls.get("endpoint_type", "business_api"),
+                    "business_intent": cls.get("business_intent", req.get("nav_context", "")),
+                    "risk_hint": cls.get("risk_hint", "Medium"),
+                }
+            )
+        return results
+
+    except Exception as e:  # noqa: BLE001
+        print(f"[auth_explore] mmx 分类异常: {e}，已跳过 hunt_queue 写入", file=sys.stderr)
+        return []
+
+
+def write_hunt_queue(
+    conn: sqlite3.Connection,
+    classified: list[dict],
+    target_id: int,
+) -> int:
+    """将 mmx 分类后的业务接口写入 hunt_queue（source='auth_explore'）。"""
+    count = 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for req in classified:
+        url = req.get("url", "")
+        parsed = urlparse(url)
+        url_base = url.split("?")[0]
+        query_string = parsed.query
+        body = req.get("post_data") or ""
+        content_type = "application/json" if body and body.lstrip().startswith("{") else ""
+        try:
+            cur = conn.execute(
+                """INSERT INTO hunt_queue
+                   (target_id, method, url, query_string, body, content_type,
+                    endpoint_type, business_intent, risk_hint, source, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'auth_explore', 'queued', ?)
+                   ON CONFLICT(method, url, query_string) DO NOTHING""",
+                (
+                    target_id,
+                    req.get("method", "GET").upper(),
+                    url_base,
+                    query_string,
+                    body,
+                    content_type,
+                    req.get("endpoint_type", "business_api"),
+                    req.get("business_intent", ""),
+                    req.get("risk_hint", "Medium"),
+                    now,
+                ),
+            )
+            count += cur.rowcount
+        except sqlite3.Error as e:
+            print(f"[auth_explore] hunt_queue 写入失败 {url_base}: {e}", file=sys.stderr)
+    conn.commit()
+    return count
 
 
 # ── Playwright browser navigation ─────────────────────────────────────────────
@@ -179,77 +606,150 @@ async def explore_authenticated(
 
         page.on("request", on_request)
 
+        response_candidates: list[dict] = []
+        response_tasks: list[asyncio.Task] = []
+
+        async def on_response(response):
+            if response.request.resource_type not in ("xhr", "fetch"):
+                return
+            try:
+                content_type = response.headers.get("content-type", "")
+                if "json" not in content_type.lower():
+                    return
+                payload = await response.json()
+                response_candidates.extend(
+                    extract_response_candidates(payload, seed_url=seed_url, source_url=response.url)
+                )
+            except Exception:  # noqa: S112,BLE001 — response bodies may be unavailable
+                return
+
+        def schedule_response(response):
+            response_tasks.append(asyncio.create_task(on_response(response)))
+
+        async def drain_response_tasks() -> None:
+            if not response_tasks:
+                return
+            pending = list(response_tasks)
+            response_tasks.clear()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        async def collect_dom_candidates(source: str) -> list[dict]:
+            try:
+                snapshots = await page.evaluate(
+                    """selector => Array.from(document.querySelectorAll(selector)).slice(0, 120).map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.textContent || '').trim().slice(0, 80),
+                        aria: el.getAttribute('aria-label') || '',
+                        title: el.getAttribute('title') || '',
+                        role: el.getAttribute('role') || '',
+                        className: el.className || '',
+                        href: el.getAttribute('href') || '',
+                        src: el.getAttribute('src') || '',
+                        onclick: el.getAttribute('onclick') || '',
+                        dataUrl: el.getAttribute('data-url') || '',
+                        dataHref: el.getAttribute('data-href') || '',
+                        dataRoute: el.getAttribute('data-route') || '',
+                        dataPath: el.getAttribute('data-path') || '',
+                        dataTo: el.getAttribute('data-to') || '',
+                        dataLink: el.getAttribute('data-link') || '',
+                        dataSrc: el.getAttribute('data-src') || '',
+                        formAction: el.getAttribute('formaction') || ''
+                    }))""",
+                    DOM_CANDIDATE_SELECTOR,
+                )
+            except Exception:  # noqa: S112,BLE001
+                return []
+            candidates: list[dict] = []
+            for attrs in snapshots:
+                candidates.extend(dom_attrs_to_candidates(attrs, seed_url, source))
+            return candidates
+
+        async def click_fingerprint(fingerprint: str) -> bool:
+            try:
+                data = json.loads(fingerprint)
+            except json.JSONDecodeError:
+                return False
+            try:
+                return await page.evaluate(
+                    """({selector, fp}) => {
+                        const text = fp.text || '';
+                        const nodes = Array.from(document.querySelectorAll(selector));
+                        const match = nodes.find(el => {
+                            const label = (el.innerText || el.textContent || '').trim().slice(0, 60);
+                            const role = el.getAttribute('role') || '';
+                            const tag = el.tagName.toLowerCase();
+                            return label === text && (!fp.role || fp.role === role) && (!fp.tag || fp.tag === tag);
+                        });
+                        if (!match) return false;
+                        match.click();
+                        return true;
+                    }""",
+                    {"selector": DOM_CANDIDATE_SELECTOR, "fp": data},
+                )
+            except Exception:  # noqa: S112,BLE001
+                return False
+
+        page.on("response", schedule_response)
+
         try:
             await page.goto(seed_url, wait_until="networkidle", timeout=30000)
             all_page_urls.add(page.url)
+            await drain_response_tasks()
         except Exception as e:
             print(f"[auth_explore] 首页导航失败: {e}", file=sys.stderr)
             return [], []
 
-        nav_hrefs: list[tuple[str, str]] = []
-        for selector in NAV_SELECTORS:
-            try:
-                elements = await page.query_selector_all(selector)
-                for el in elements[:30]:
-                    href = await el.get_attribute("href") or ""
-                    label = (await el.inner_text()).strip()[:30]
-                    if href and href not in ("#", "javascript:void(0)", "javascript:;"):
-                        nav_hrefs.append((href, label or href))
-            except Exception:  # noqa: S112,BLE001 — DOM query may fail for dynamic selectors
-                continue
+        queue = CandidateQueue(per_prefix_cap=3, per_host_cap=20)
+        queue.extend(await collect_dom_candidates("seed_dom"))
+        queue.extend(response_candidates)
+        response_candidates.clear()
 
-        print(f"[auth_explore] 发现 {len(nav_hrefs)} 个导航项", file=sys.stderr)
+        print(f"[auth_explore] 初始发现 {len(queue.items())} 个候选入口", file=sys.stderr)
 
-        visited_hrefs: set[str] = set()
-        scheme = urlparse(seed_url).scheme
-
-        for href, label in nav_hrefs[:40]:
-            if href in visited_hrefs:
-                continue
-            visited_hrefs.add(href)
-            current_nav_context = label
+        processed = 0
+        max_candidates = 60 if nav_depth >= 2 else 30
+        while processed < max_candidates:
+            candidate = queue.pop()
+            if not candidate:
+                break
+            processed += 1
+            current_nav_context = candidate.get("label", candidate.get("value", ""))[:80]
 
             try:
-                if href.startswith("http"):
-                    nav_url = href
-                elif href.startswith("/"):
-                    nav_url = f"{scheme}://{base_domain}{href}"
+                if candidate["kind"] in ("url", "hash", "response_url"):
+                    await page.goto(candidate["value"], wait_until="networkidle", timeout=15000)
+                    all_page_urls.add(page.url)
+                elif candidate["kind"] == "click":
+                    await page.goto(seed_url, wait_until="domcontentloaded", timeout=10000)
+                    before_pages = set(context.pages)
+                    clicked = await click_fingerprint(candidate["value"])
+                    if not clicked:
+                        continue
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:  # noqa: S112,BLE001
+                        await page.wait_for_timeout(1000)
+                    for popup in [pg for pg in context.pages if pg not in before_pages]:
+                        try:
+                            all_page_urls.add(popup.url)
+                            await popup.wait_for_load_state("networkidle", timeout=5000)
+                            await popup.close()
+                        except Exception:  # noqa: S112,BLE001
+                            continue
+                    all_page_urls.add(page.url)
                 else:
                     continue
 
-                await page.goto(nav_url, wait_until="networkidle", timeout=15000)
-                all_page_urls.add(page.url)
-
+                await drain_response_tasks()
+                queue.extend(response_candidates)
+                response_candidates.clear()
                 if nav_depth >= 2:
-                    sub_hrefs: list[tuple[str, str]] = []
-                    for sel in NAV_SELECTORS:
-                        try:
-                            els = await page.query_selector_all(sel)
-                            for el in els[:20]:
-                                sh = await el.get_attribute("href") or ""
-                                sl = (await el.inner_text()).strip()[:30]
-                                if sh and sh not in ("#", "javascript:void(0)") and sh not in visited_hrefs:
-                                    sub_hrefs.append((sh, f"{label}>{sl}"))
-                        except Exception:  # noqa: S112,BLE001 — sub-selector may fail
-                            continue
-
-                    for sub_href, sub_label in sub_hrefs[:15]:
-                        visited_hrefs.add(sub_href)
-                        current_nav_context = sub_label
-                        try:
-                            if sub_href.startswith("http"):
-                                sub_url = sub_href
-                            elif sub_href.startswith("/"):
-                                sub_url = f"{scheme}://{base_domain}{sub_href}"
-                            else:
-                                continue
-                            await page.goto(sub_url, wait_until="networkidle", timeout=10000)
-                            all_page_urls.add(page.url)
-                        except Exception:  # noqa: S112,BLE001 — sub-nav may fail
-                            continue
-
+                    queue.extend(await collect_dom_candidates(current_nav_context))
             except Exception as e:
-                print(f"[auth_explore] 导航 {href} 失败: {e}", file=sys.stderr)
+                print(
+                    f"[auth_explore] 候选入口 {candidate.get('label') or candidate.get('value')} 失败: {e}",
+                    file=sys.stderr,
+                )
                 continue
 
         await page.close()
@@ -298,11 +798,27 @@ def main() -> None:
     api_requests, page_urls = asyncio.run(explore_authenticated(cdp_url, seed_url, cookies, base_domain))
 
     counts = write_explore_results_to_db(conn, api_requests, page_urls)
+
+    # 业务接口 → hunt_queue：heuristic 预筛 + mmx 分类
+    candidates = [r for r in api_requests if _is_hunt_candidate(r)]
+    hq_count = 0
+    if candidates:
+        tmp_dir = PROJECT_ROOT / "tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        classified = _classify_with_mmx(candidates, tmp_dir)
+        if classified:
+            target_row = conn.execute("SELECT id FROM targets LIMIT 1").fetchone()
+            target_id = target_row["id"] if target_row else 0
+            hq_count = write_hunt_queue(conn, classified, target_id)
+
     conn.execute("UPDATE scan_state SET phase='spider' WHERE id=1")
     conn.commit()
     conn.close()
 
-    print(f"[auth_explore] 完成: SP={counts['sp']}  pages={counts['pages']}  phase→spider")
+    print(
+        f"[auth_explore] 完成: SP={counts['sp']}  pages={counts['pages']}"
+        f"  hunt_queue={hq_count}({len(candidates)} candidates)  phase→spider"
+    )
 
 
 if __name__ == "__main__":

@@ -165,6 +165,22 @@ CREATE INDEX IF NOT EXISTS idx_hunt_queue_source ON hunt_queue(source);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_name_domain
     ON auth_sessions(token_name, domain);
 
+CREATE TABLE IF NOT EXISTS auth_storage_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT DEFAULT 'primary',
+    storage_type TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    token_name TEXT NOT NULL,
+    token_value TEXT NOT NULL,
+    token_kind TEXT DEFAULT 'storage',
+    is_active INTEGER DEFAULT 1,
+    first_seen_at TEXT DEFAULT (datetime('now','localtime')),
+    last_seen_at TEXT DEFAULT (datetime('now','localtime')),
+    expires_at TEXT,
+    source TEXT DEFAULT 'cdp_capture',
+    UNIQUE(role, storage_type, origin, token_name)
+);
+
 CREATE TABLE IF NOT EXISTS plugins (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     name              TEXT NOT NULL UNIQUE,

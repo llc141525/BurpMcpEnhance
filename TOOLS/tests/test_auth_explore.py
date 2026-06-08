@@ -1,5 +1,13 @@
 # TOOLS/tests/test_auth_explore.py
-from auth.auth_explore import filter_api_requests, parse_request_params
+from auth.auth_explore import (
+    CandidateQueue,
+    extract_inline_route_literals,
+    extract_response_candidates,
+    filter_api_requests,
+    is_unsafe_label,
+    normalize_candidate_url,
+    parse_request_params,
+)
 
 
 class TestFilterApiRequests:
@@ -33,6 +41,11 @@ class TestFilterApiRequests:
         result = filter_api_requests(reqs, "example.com")
         assert len(result) == 1
 
+    def test_keeps_peer_subdomain_for_portal_seed(self):
+        reqs = [self._make_req("https://jwglxt.tzc.edu.cn/api/menu")]
+        result = filter_api_requests(reqs, "portal.tzc.edu.cn")
+        assert len(result) == 1
+
     def test_excludes_static_extension(self):
         reqs = [self._make_req("https://example.com/fonts/icon.woff2")]
         assert filter_api_requests(reqs, "example.com") == []
@@ -64,3 +77,86 @@ class TestParseRequestParams:
             '{"filter": "active"}',
         )
         assert set(params) == {"page", "filter"}
+
+
+class TestNavigationCandidateExtraction:
+    def test_normalizes_hash_route_against_seed_url(self):
+        url = normalize_candidate_url("#/Dashboard", "https://portal.example.edu/main.html#/IndexView")
+        assert url == "https://portal.example.edu/main.html#/Dashboard"
+
+    def test_rejects_unsafe_labels(self):
+        assert is_unsafe_label("退出登录")
+        assert is_unsafe_label("Delete user")
+        assert not is_unsafe_label("成绩查询")
+
+    def test_extracts_nested_response_routes(self):
+        payload = {
+            "menus": [
+                {"name": "一卡通", "appUrl": "https://ecard.example.edu/home"},
+                {"title": "成绩", "children": [{"route": "/grade/index"}]},
+                {"label": "iframe app", "iframeUrl": "https://portal.example.edu/app/frame"},
+            ]
+        }
+        candidates = extract_response_candidates(
+            payload,
+            seed_url="https://portal.example.edu/main.html#/IndexView",
+            source_url="https://portal.example.edu/api/menu",
+        )
+
+        values = {c["value"] for c in candidates}
+        labels = {c["label"] for c in candidates}
+        assert "https://ecard.example.edu/home" in values
+        assert "https://portal.example.edu/grade/index" in values
+        assert "https://portal.example.edu/app/frame" in values
+        assert {"一卡通", "成绩", "iframe app"} <= labels
+
+    def test_excludes_external_response_routes(self):
+        payload = {"menus": [{"name": "外部系统", "appUrl": "https://evil.example.net/home"}]}
+
+        candidates = extract_response_candidates(
+            payload,
+            seed_url="https://portal.example.edu/main.html#/IndexView",
+            source_url="https://portal.example.edu/api/menu",
+        )
+
+        assert candidates == []
+
+    def test_extracts_inline_script_routes(self):
+        script = """
+        window.open('https://oa.example.edu/home');
+        location.href = '/portal/news';
+        router.push({ path: '/student/profile' });
+        navigate('/library/search');
+        """
+        routes = extract_inline_route_literals(script)
+
+        assert "https://oa.example.edu/home" in routes
+        assert "/portal/news" in routes
+        assert "/student/profile" in routes
+        assert "/library/search" in routes
+
+
+class TestCandidateQueue:
+    def test_preserves_breadth_with_per_prefix_cap(self):
+        queue = CandidateQueue(per_prefix_cap=2, per_host_cap=10)
+        for idx in range(5):
+            queue.add(
+                {
+                    "kind": "url",
+                    "value": f"https://jwglxt.example.edu/jwglxt/page/{idx}",
+                    "label": f"教务{idx}",
+                    "source": "test",
+                }
+            )
+        queue.add(
+            {
+                "kind": "url",
+                "value": "https://ecard.example.edu/home",
+                "label": "一卡通",
+                "source": "test",
+            }
+        )
+
+        values = [c["value"] for c in queue.items()]
+        assert len([v for v in values if "jwglxt.example.edu/jwglxt" in v]) == 2
+        assert "https://ecard.example.edu/home" in values

@@ -133,3 +133,19 @@ class TestWriteCredentialsToDb:
         conn.close()
         assert cred[0] == "user123"
         assert sess[0] is None
+
+
+class TestPersistCdpAuthState:
+    def test_persist_cdp_auth_state_delegates_to_auth_state_capture(self, monkeypatch):
+        from auth import browser_auth
+
+        calls = []
+
+        def fake_capture(target, db_path, cdp_url):
+            calls.append((target, db_path, cdp_url))
+            return {"cookies": 2, "storage_tokens": 1}
+
+        monkeypatch.setattr(browser_auth, "capture_to_db", fake_capture, raising=False)
+
+        assert browser_auth.persist_cdp_auth_state("目标", "db.sqlite", "http://localhost:9222")
+        assert calls == [("目标", "db.sqlite", "http://localhost:9222")]
