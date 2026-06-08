@@ -72,52 +72,18 @@ def needs_relogin(sessions: list[dict]) -> bool:
 
 
 def ensure_session_valid(target: str, db_path: Path, conn: sqlite3.Connection) -> bool:
-    """検查 session 健康状态；已过期则尝试自动续期。返回 True 表示 session 有效。"""
-    has_auth = conn.execute("SELECT count(*) FROM auth_sessions WHERE cookie_source='browser_use'").fetchone()[0]
+    """检查 session 健康状态；已过期则调 session_manager 自动续期。返回 True 表示 session 有效。"""
+    has_auth = conn.execute("SELECT count(*) FROM auth_sessions WHERE is_active=1").fetchone()[0]
     if not has_auth:
         return True  # 无需认证的目标直接通过
 
-    subprocess.run(
-        [PYTHON, str(TOOLS_DIR / "db" / "auth_check.py"), "--target", target, "--update"],
-        capture_output=True,
-        text=True,
-        timeout=30,
+    result = subprocess.run(  # noqa: S603
+        [PYTHON, str(TOOLS_DIR / "auth" / "session_manager.py"), "--target", target],
+        timeout=400,
         check=False,
     )
-
-    rows = conn.execute(
-        "SELECT is_active, expires_at, username, password FROM auth_sessions "
-        "WHERE cookie_source='browser_use' ORDER BY id DESC LIMIT 5"
-    ).fetchall()
-    sessions = [{"is_active": r[0], "expires_at": r[1], "username": r[2], "password": r[3]} for r in rows]
-
-    if not needs_relogin(sessions):
+    if result.returncode == 0:
         return True
-
-    active_cred = next((s for s in sessions if s.get("username")), None)
-    if active_cred:
-        url_row = conn.execute("SELECT url FROM pages WHERE depth=0 LIMIT 1").fetchone()
-        login_url = url_row[0] if url_row else None
-        if login_url:
-            re_result = subprocess.run(  # noqa: S603
-                [
-                    PYTHON,
-                    str(TOOLS_DIR / "auth" / "browser_auth.py"),
-                    "--target",
-                    target,
-                    "--url",
-                    login_url,
-                    "--username",
-                    active_cred["username"],
-                    "--password",
-                    active_cred["password"],
-                ],
-                timeout=360,
-                check=False,
-            )
-            if re_result.returncode == 0:
-                print("[run_scan] Session 已续期")
-                return True
 
     url_row = conn.execute("SELECT url FROM pages WHERE depth=0 LIMIT 1").fetchone()
     login_url = url_row[0] if url_row else None
@@ -310,8 +276,64 @@ def handle_brute(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
         timeout=600,
         check=False,
     )
-    set_phase(conn, "spider")
-    print_tag("PHASE_TRANSITION", ["brute → spider    目录爆破完成"])
+    set_phase(conn, "reflect")
+    print_tag("PHASE_TRANSITION", ["brute → reflect    目录爆破完成，进入自进化分析"])
+
+
+def handle_reflect(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    print("[run_scan] phase=reflect → 运行 reflect.py ...")
+    result = subprocess.run(  # noqa: S603
+        [PYTHON, str(PIPELINE_DIR / "reflect.py"), "--target", target],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if result.stdout:
+        print(result.stdout, end="")
+
+    if result.returncode == 2:
+        pending_line = next(
+            (line for line in result.stdout.splitlines() if line.startswith("[APPROVAL_PENDING]")),
+            None,
+        )
+        if pending_line:
+            import json  # noqa: PLC0415
+
+            pending_json = pending_line[len("[APPROVAL_PENDING]") :].strip()
+            try:
+                pending = json.loads(pending_json)
+            except json.JSONDecodeError:
+                pending = []
+            _handle_reflect_approval_cli(conn, pending)
+    elif result.returncode not in (0, 2):
+        print(f"[warn] reflect.py 退出码 {result.returncode}，非致命，继续")
+
+    set_phase(conn, "done")
+    print_tag("PHASE_TRANSITION", ["reflect → done    自进化分析完成"])
+
+
+def _handle_reflect_approval_cli(conn: sqlite3.Connection, pending: list[dict]) -> None:
+    """飞书审批超时后，在 Claude Code 界面展示待审批列表并读取输入。"""
+    if not pending:
+        return
+    print("\n[reflect] 飞书审批超时，等待审批:")
+    for i, p in enumerate(pending, 1):
+        print(f"  [{i}] {p.get('name', '?')} ({p.get('priority', '?')}) — {p.get('gap', '?')}")
+    print("\n回复 'ok' 全部激活 | 'skip N' 跳过第N条 | 'no' 全部丢弃 (默认: ok)")
+    try:
+        reply = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        reply = "ok"
+    if not reply:
+        reply = "ok"
+
+    from pipeline.reflect import activate_plugins, parse_feishu_reply  # noqa: PLC0415
+
+    plugin_ids = [p["id"] for p in pending if isinstance(p.get("id"), int)]
+    approved_ids = parse_feishu_reply(reply, plugin_ids)
+    activate_plugins(conn, approved_ids)
+    print(f"[reflect] 激活 {len(approved_ids)} 个插件")
 
 
 def handle_auth_pending(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
@@ -374,6 +396,7 @@ HANDLERS = {
     "spider": handle_spider,
     "probe": handle_probe,
     "brute": handle_brute,
+    "reflect": handle_reflect,
     "auth_ready": handle_auth_ready,
     "auth_explore": handle_auth_explore,
 }

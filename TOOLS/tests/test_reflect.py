@@ -142,3 +142,20 @@ def test_parse_feishu_reply_unknown_defaults_to_ok():
 
     ids = [1, 2]
     assert parse_feishu_reply("随便什么", ids) == [1, 2]
+
+
+def test_forge_none_token():
+    import base64
+    import json
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugins" / "scripts"))
+    from jwt_none_alg import forge_none_token
+
+    header = base64.b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    payload = base64.b64encode(b'{"sub":"1"}').rstrip(b"=").decode()
+    token = f"{header}.{payload}.signature"
+    result = forge_none_token(token)
+    assert result is not None
+    new_header = json.loads(base64.b64decode(result.split(".")[0] + "=="))
+    assert new_header["alg"] == "none"
+    assert result.endswith(".")

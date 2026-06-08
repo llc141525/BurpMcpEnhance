@@ -58,6 +58,16 @@ FRAMEWORK_TAGS = {
 HTTP_METHODS = ["OPTIONS", "PUT", "DELETE", "PATCH", "TRACE"]
 
 
+def load_active_plugins(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """从 plugins 表读取已激活插件，按类型分组，返回路径列表。"""
+    rows = conn.execute("SELECT type, file_path FROM plugins WHERE active=1 AND file_path IS NOT NULL").fetchall()
+    result: dict[str, list[str]] = {"nuclei_template": [], "python_script": []}
+    for ptype, fpath in rows:
+        if ptype in result and fpath:
+            result[ptype].append(fpath)
+    return result
+
+
 def new_sp_id(prefix: str = "SP-PR") -> str:
     return f"{prefix}-{_uuid.uuid4().hex[:8]}"
 
@@ -241,6 +251,14 @@ def mode_nuclei(url: str, conn: sqlite3.Connection, tags: str | None, cookie_hea
     ]
     if cookie_header:
         cmd += ["-H", f"Cookie: {cookie_header}"]
+    try:
+        active_plugins = load_active_plugins(conn)
+        for tpl_path in active_plugins.get("nuclei_template", []):
+            full = PROJECT_ROOT / tpl_path
+            if full.exists():
+                cmd += ["-t", str(full)]
+    except Exception as e:
+        print(f"  [warn] 加载插件模板失败: {e}")
     print(f"[nuclei] {url} (tags={tag_arg})")
     try:
         subprocess.run(cmd, check=False, timeout=180)
@@ -370,6 +388,19 @@ def main() -> None:
         if not args.url:
             sys.exit("[error] methods 模式需要 --url")
         total_added = mode_methods(args.url, conn, args.proxy, cookie_header)
+
+    try:
+        active_scripts = load_active_plugins(conn).get("python_script", [])
+        for script_path in active_scripts:
+            full_path = PROJECT_ROOT / script_path
+            if full_path.exists():
+                subprocess.run(  # noqa: S603
+                    [sys.executable, str(full_path), "--target", args.target, "--db", str(db_path)],
+                    timeout=120,
+                    check=False,
+                )
+    except Exception as e:
+        print(f"[warn] 执行插件脚本失败: {e}")
 
     conn.close()
     print(f"\n=== probe_runner ({args.mode}) ===")

@@ -71,6 +71,14 @@ CREATE TABLE auth_sessions (
     username TEXT DEFAULT NULL,
     password TEXT DEFAULT NULL
 );
+CREATE TABLE auth_credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_label TEXT,
+    username TEXT,
+    password TEXT,
+    login_url TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
 """
 
 
@@ -95,15 +103,21 @@ class TestWriteCredentialsToDb:
         write_credentials_to_db(db_file, "user123", "pass456")
 
         conn = sqlite3.connect(db_file)
-        row = conn.execute("SELECT username, password FROM auth_sessions WHERE cookie_source='browser_use'").fetchone()
+        # auth_credentials row always written
+        cred = conn.execute("SELECT username, password FROM auth_credentials WHERE account_label='primary'").fetchone()
+        # auth_sessions updated for is_active=1 row
+        sess = conn.execute("SELECT username, password FROM auth_sessions WHERE is_active=1").fetchone()
         conn.close()
-        assert row[0] == "user123"
-        assert row[1] == "pass456"
+        assert cred[0] == "user123"
+        assert cred[1] == "pass456"
+        assert sess[0] == "user123"
+        assert sess[1] == "pass456"
 
-    def test_does_not_write_when_no_browser_use_row(self, tmp_path):
+    def test_writes_credentials_when_no_browser_use_row(self, tmp_path):
+        """auth_credentials is always written; no is_active row means auth_sessions unchanged."""
         db_file = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_file)
-        _insert = "INSERT INTO auth_sessions (token_type, cookie_source) VALUES ('cookie', 'manual');"
+        _insert = "INSERT INTO auth_sessions (token_type, cookie_source, is_active) VALUES ('cookie', 'manual', 0);"
         conn.executescript(_AUTH_SESSIONS_DDL + _insert)  # noqa: S608
         conn.close()
 
@@ -112,6 +126,10 @@ class TestWriteCredentialsToDb:
         write_credentials_to_db(db_file, "user123", "pass456")
 
         conn = sqlite3.connect(db_file)
-        row = conn.execute("SELECT username FROM auth_sessions").fetchone()
+        # auth_credentials still written
+        cred = conn.execute("SELECT username FROM auth_credentials WHERE account_label='primary'").fetchone()
+        # no active session, so auth_sessions username stays NULL
+        sess = conn.execute("SELECT username FROM auth_sessions").fetchone()
         conn.close()
-        assert row[0] is None
+        assert cred[0] == "user123"
+        assert sess[0] is None
