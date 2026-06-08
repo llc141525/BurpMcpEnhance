@@ -2,9 +2,9 @@
 
 ## Context
 
-`TOOLS/auth/auth_explore.py` currently discovers authenticated navigation mostly from real `href` links. This misses many modern portal entries, especially Vue/SPA portal cards whose destinations are driven by click handlers, hash routes, or API-returned menu data. On the Taizhou University fusion portal (`https://portal.tzc.edu.cn/main.html#/IndexView`), this causes poor expansion of reachable authenticated surfaces.
+`TOOLS/auth/auth_explore.py` currently discovers authenticated navigation mostly from real `href` links. This misses many modern portal entries across Vue, React, Angular, jQuery-era portals, layui/admin templates, low-code platforms, and micro-frontend shells. Their destinations may be driven by click handlers, component state, hash routes, inline scripts, `data-*` attributes, `window.open`, iframe targets, or API-returned menu data. On the Taizhou University fusion portal (`https://portal.tzc.edu.cn/main.html#/IndexView`), this causes poor expansion of reachable authenticated surfaces.
 
-In the observed failure mode, the explorer repeatedly reaches the academic affairs system menu page (`https://jwglxt.tzc.edu.cn/jwglxt/xtgl/index_initMenu.html?...`) while failing to enumerate the many peer subsystem entries on the portal homepage. Those entries are often Vue card click handlers or menu items returned by portal APIs rather than `<a href="...">` links.
+In the observed failure mode, the explorer repeatedly reaches the academic affairs system menu page (`https://jwglxt.tzc.edu.cn/jwglxt/xtgl/index_initMenu.html?...`) while failing to enumerate the many peer subsystem entries on the portal homepage. Those entries may be Vue cards on this target, but the implementation must treat that as one example of a broader pattern: authenticated portal entries that are not represented as normal anchor links.
 
 The authentication workflow has a second bottleneck: automatic relogin depends too heavily on `browser-use`. That path is slow, sometimes hard to locate in the current environment, and does not make it easy for parallel Codex sessions to reuse cookies or tokens after login succeeds. After `browser_auth.py` succeeds, switching to another window or session can be slow or unreliable because downstream tools do not consistently treat the existing CDP browser context as the reusable authenticated state.
 
@@ -13,7 +13,7 @@ The authentication workflow has a second bottleneck: automatic relogin depends t
 - Make the logged-in Chrome/CDP session the primary source of truth for authentication state.
 - Allow any scanner/review session to quickly capture and reuse cookies, localStorage, sessionStorage, and bearer/JWT-like tokens.
 - Keep `browser-use` as a fallback login assistant, not the default session renewal path.
-- Improve `auth_explore.py` so it discovers SPA/hash/click-driven portal entries, not only normal anchors.
+- Improve `auth_explore.py` so it discovers framework-agnostic SPA/hash/click/script/API-driven portal entries, not only normal anchors.
 - Prevent the explorer from over-focusing on the first reachable subsystem when the portal homepage contains many peer subsystems.
 - Preserve existing DB compatibility for cookie users while adding structured storage for non-cookie tokens.
 - Avoid unsafe UI actions such as logout, delete, submit, pay, bind, or destructive confirmation.
@@ -82,12 +82,15 @@ This keeps fast reuse on the common path and isolates slow login automation to t
 
 ## SPA Explore Flow
 
-`auth_explore.py` should replace the current `nav_hrefs` list with a normalized navigation candidate queue. Candidate sources:
+`auth_explore.py` should replace the current `nav_hrefs` list with a normalized navigation candidate queue. Candidate sources should be framework-agnostic:
 
 - Normal anchors with absolute, root-relative, relative, or hash routes.
 - Hash routes such as `#/IndexView`, `/main.html#/foo`, and route-like strings returned by API responses.
-- Clickable UI elements: `button`, `[role=button]`, `[role=menuitem]`, `[role=tab]`, `.el-menu-item`, `.ant-menu-item`, `.el-card`, `.ant-card`, `.menu-item`, `.nav-item`, and elements with `onclick`, `data-url`, `data-href`, `data-route`, or `data-path`.
-- XHR/fetch JSON responses containing likely entry fields such as `url`, `href`, `link`, `path`, `route`, `targetUrl`, `redirectUrl`, or `appUrl`.
+- Clickable UI elements: `button`, `[role=button]`, `[role=menuitem]`, `[role=tab]`, menu/card/list/grid tiles, admin-template navigation items, and elements with navigation-looking text or ARIA labels.
+- Attribute-driven entries: `onclick`, `data-url`, `data-href`, `data-route`, `data-path`, `data-to`, `data-link`, `data-src`, `target`, `formaction`, and iframe `src`.
+- Script-driven entries: inline `window.open(...)`, `location.href=...`, `router.push(...)`, `navigate(...)`, and route/path literals found in small inline scripts or event attributes.
+- XHR/fetch JSON responses containing likely entry fields such as `url`, `href`, `link`, `path`, `route`, `targetUrl`, `redirectUrl`, `appUrl`, `menuUrl`, `moduleUrl`, `iframeUrl`, or `openUrl`.
+- Micro-frontend shell entries, including routes or URLs embedded in app registry payloads, module manifests, and iframe/container bootstrap data.
 
 Each candidate should include:
 
@@ -95,6 +98,7 @@ Each candidate should include:
 - `value`: URL/hash/selector payload.
 - `label`: short UI or response-derived label.
 - `source`: DOM selector, response URL, or parent context.
+- `framework_hint`: optional best-effort hint such as `vue`, `react`, `angular`, `jquery`, `layui`, `iframe`, `micro_frontend`, or `unknown`. This is metadata only; traversal must not depend on a specific framework.
 
 The queue should preserve portal breadth. When the seed page is a portal or hash-route SPA, collect the first wave of candidates from the portal page before entering any one subsystem. The explorer should then process peer subsystem candidates round-robin, with per-host and per-prefix caps so a deep subsystem such as `jwglxt.tzc.edu.cn/jwglxt/` cannot starve other portal applications.
 
@@ -114,7 +118,7 @@ For click candidates, the explorer should:
 4. Add the resulting page URL and any newly discovered API requests.
 5. Return to the seed page or previous route when practical.
 
-For popup or new-tab candidates, the explorer should capture the new page URL and API requests, close the new page when finished, and continue from the original portal page. This directly covers portal cards that open subsystems in separate windows.
+For popup or new-tab candidates, the explorer should capture the new page URL and API requests, close the new page when finished, and continue from the original portal page. This covers portal entries that open subsystems in separate windows, whether they are cards, menu items, list rows, tiles, buttons, or script-driven controls.
 
 ## Safety Rules
 
@@ -123,7 +127,7 @@ Do not click elements whose visible text, aria label, title, or nearby metadata 
 - logout, sign out, exit, delete, remove, submit, save, confirm, pay, bind, unbind
 - 退出, 注销, 删除, 移除, 提交, 保存, 确认, 支付, 绑定, 解绑
 
-The explorer should prefer navigation-looking cards and menu items over form buttons. It should not fill forms or submit user-controlled data.
+The explorer should prefer navigation-looking tiles, menu items, list rows, and app-launch entries over form buttons. It should not fill forms or submit user-controlled data.
 
 ## Error Handling
 
@@ -139,7 +143,9 @@ Unit tests should cover:
 
 - URL and hash route normalization.
 - Unsafe clickable label filtering.
+- Attribute and inline-script route extraction.
 - Extraction of response URLs/routes from nested JSON.
+- Framework-neutral candidate extraction for representative Vue, React, jQuery/admin-template, iframe, and micro-frontend snippets.
 - Cookie and storage token DB upsert behavior.
 - `ensure` priority order: valid DB session, CDP capture, browser-use fallback.
 
@@ -160,8 +166,8 @@ Browser-level verification should use a local/mock SPA when possible. For real t
 - A second session can call `session_manager.py --target <name>` and reuse the Chrome login state without invoking browser-use when CDP has a valid logged-in context.
 - Cookies remain available through `cookie_helper.py`.
 - Storage-backed JWT/bearer-like tokens are persisted in `auth_storage_tokens`.
-- `auth_explore.py` discovers hash routes, click-driven portal cards, and API-returned entry URLs.
+- `auth_explore.py` discovers hash routes, click-driven portal entries, attribute/script-driven routes, iframe targets, micro-frontend entries, and API-returned entry URLs.
 - Portal breadth is preserved: one deep subsystem cannot prevent exploration of peer subsystem entries from the portal homepage.
-- Portal cards that open a popup or new tab are captured, then the explorer returns to the original portal page.
+- Portal entries that open a popup or new tab are captured, then the explorer returns to the original portal page.
 - The explorer records resulting authenticated API requests with meaningful `nav_context`.
 - The implementation does not write temporary files outside `tmp/`.
