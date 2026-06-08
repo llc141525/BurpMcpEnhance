@@ -4,7 +4,9 @@
 
 `TOOLS/auth/auth_explore.py` currently discovers authenticated navigation mostly from real `href` links. This misses many modern portal entries, especially Vue/SPA portal cards whose destinations are driven by click handlers, hash routes, or API-returned menu data. On the Taizhou University fusion portal (`https://portal.tzc.edu.cn/main.html#/IndexView`), this causes poor expansion of reachable authenticated surfaces.
 
-The authentication workflow has a second bottleneck: automatic relogin depends too heavily on `browser-use`. That path is slow, sometimes hard to locate in the current environment, and does not make it easy for parallel Codex sessions to reuse cookies or tokens after login succeeds.
+In the observed failure mode, the explorer repeatedly reaches the academic affairs system menu page (`https://jwglxt.tzc.edu.cn/jwglxt/xtgl/index_initMenu.html?...`) while failing to enumerate the many peer subsystem entries on the portal homepage. Those entries are often Vue card click handlers or menu items returned by portal APIs rather than `<a href="...">` links.
+
+The authentication workflow has a second bottleneck: automatic relogin depends too heavily on `browser-use`. That path is slow, sometimes hard to locate in the current environment, and does not make it easy for parallel Codex sessions to reuse cookies or tokens after login succeeds. After `browser_auth.py` succeeds, switching to another window or session can be slow or unreliable because downstream tools do not consistently treat the existing CDP browser context as the reusable authenticated state.
 
 ## Goals
 
@@ -12,6 +14,7 @@ The authentication workflow has a second bottleneck: automatic relogin depends t
 - Allow any scanner/review session to quickly capture and reuse cookies, localStorage, sessionStorage, and bearer/JWT-like tokens.
 - Keep `browser-use` as a fallback login assistant, not the default session renewal path.
 - Improve `auth_explore.py` so it discovers SPA/hash/click-driven portal entries, not only normal anchors.
+- Prevent the explorer from over-focusing on the first reachable subsystem when the portal homepage contains many peer subsystems.
 - Preserve existing DB compatibility for cookie users while adding structured storage for non-cookie tokens.
 - Avoid unsafe UI actions such as logout, delete, submit, pay, bind, or destructive confirmation.
 
@@ -33,6 +36,8 @@ Add a shared auth state layer under `TOOLS/auth/`, preferably `auth_state.py`, w
 `session_manager.py` should become a thin compatibility wrapper around this shared layer, so existing callers keep working.
 
 `browser_auth.py` should keep handling first login and difficult login flows. After successful login it should call the shared capture logic instead of maintaining separate cookie persistence behavior.
+
+For multi-window reliability, tools should prefer attaching to the already logged-in CDP context and selecting an existing page whose URL matches the target site before opening a new tab. Opening a new page should be a fallback after state capture, not the primary way to decide whether the user is logged in.
 
 ## Data Model
 
@@ -91,6 +96,8 @@ Each candidate should include:
 - `label`: short UI or response-derived label.
 - `source`: DOM selector, response URL, or parent context.
 
+The queue should preserve portal breadth. When the seed page is a portal or hash-route SPA, collect the first wave of candidates from the portal page before entering any one subsystem. The explorer should then process peer subsystem candidates round-robin, with per-host and per-prefix caps so a deep subsystem such as `jwglxt.tzc.edu.cn/jwglxt/` cannot starve other portal applications.
+
 The explorer should process candidates with bounds:
 
 - Deduplicate by normalized URL/hash/element fingerprint.
@@ -106,6 +113,8 @@ For click candidates, the explorer should:
 3. Wait briefly for network activity, URL changes, popup pages, or DOM route changes.
 4. Add the resulting page URL and any newly discovered API requests.
 5. Return to the seed page or previous route when practical.
+
+For popup or new-tab candidates, the explorer should capture the new page URL and API requests, close the new page when finished, and continue from the original portal page. This directly covers portal cards that open subsystems in separate windows.
 
 ## Safety Rules
 
@@ -152,5 +161,7 @@ Browser-level verification should use a local/mock SPA when possible. For real t
 - Cookies remain available through `cookie_helper.py`.
 - Storage-backed JWT/bearer-like tokens are persisted in `auth_storage_tokens`.
 - `auth_explore.py` discovers hash routes, click-driven portal cards, and API-returned entry URLs.
+- Portal breadth is preserved: one deep subsystem cannot prevent exploration of peer subsystem entries from the portal homepage.
+- Portal cards that open a popup or new tab are captured, then the explorer returns to the original portal page.
 - The explorer records resulting authenticated API requests with meaningful `nav_context`.
 - The implementation does not write temporary files outside `tmp/`.
