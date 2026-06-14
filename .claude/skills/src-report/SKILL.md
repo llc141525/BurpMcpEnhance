@@ -74,9 +74,20 @@ python3 TOOLS/db_query.py --target "{目标名}" \
 | 空（无 findings） | 输出"findings 表无 confirmed 漏洞，请先运行 vuln-review" 后停止 |
 | 空（全部已报告/剔除） | 输出"目标 {目标名} 在 {平台} 无待报告漏洞（所有 findings 已报告或已剔除）。如需重新报告，请将 findings.reported_platforms 中对应平台名删除后重跑。" 后停止 |
 
-### Step 4: 逐条证据审查
+### Step 4: 逐条证据审查（每条实时输出）
 
-对每条 finding 执行以下判定：
+对每条 finding，**先输出审查过程再写 DB**，不等全部处理完再批量输出：
+
+```
+─── 审查 [N/Total] {finding_id} ───
+类型: {type}  原等级: {risk}
+URL:  {method} {url}
+证据: {evidence 前 200 字}
+
+推理: {1-2 行判断依据}
+→ {确凿|充分|不足}  复核等级: {等级}  决策: {✅ 通过 | ❌ 剔除（原因）}
+──────────────────────────────────
+```
 
 #### 4a. 证据确凿度判定
 
@@ -93,6 +104,27 @@ python3 TOOLS/db_query.py --target "{目标名}" \
 - "如果绕过 WAF..." 但未实际绕过
 - 端点按设计为公开（OIDC well-known、login 页面等）
 - 无任何 PoC 响应只有理论分析
+
+**无意义信息泄露自动剔除**：当 `type='info_disclosure'` 或 `test_type='info_leak'` 时额外检查：
+
+| 证据仅含（无实质数据）→ 自动剔除 | 证据含以下任意一项 → 保留 |
+|---|---|
+| 响应头指纹：Server / X-Powered-By / X-Generator / X-Runtime 等 | 真实 PII：姓名、手机号、邮箱、身份证号、学籍号 |
+| 框架/语言/版本号（Rails 6.x / PHP/7.4 / nginx/1.18） | 他人业务数据：订单、成绩、私信、支付信息 |
+| 路径/文件存在性（robots.txt 可读 / .git/HEAD 返回 200 但无内容） | 内网信息：内网 IP、主机名、DB 表结构、绝对路径 |
+| 错误页面暴露技术栈但无业务数据、无 PII | 凭证：API Key、Token、密码、Session |
+
+剔除输出示例：
+```
+─── 审查 [3/8] F-XXX ───
+类型: info_disclosure  原等级: Low
+URL:  GET /  (响应头)
+证据: Server: nginx/1.18.0, X-Powered-By: Phusion Passenger 6.0.14
+
+推理: 仅响应头版本指纹，无 PII/业务数据/内网信息。
+→ 证据不足  决策: ❌ 自动剔除（无意义信息泄露：仅框架指纹）
+──────────────────────────────────
+```
 
 **判定为剔除后立即写 DB**：
 
