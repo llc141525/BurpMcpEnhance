@@ -105,7 +105,7 @@ URL:  {method} {url}
 - 端点按设计为公开（OIDC well-known、login 页面等）
 - 无任何 PoC 响应只有理论分析
 
-**无意义信息泄露自动剔除**：当 `type='info_disclosure'` 或 `test_type='info_leak'` 时额外检查：
+**无意义信息泄露自动剔除**：当 `type='info_disclosure'` 时额外检查（`test_type='info_leak'` 的可疑点经 vuln-review 提升后在 findings 中 type 字段即为 `info_disclosure`）：
 
 | 证据仅含（无实质数据）→ 自动剔除 | 证据含以下任意一项 → 保留 |
 |---|---|
@@ -123,6 +123,18 @@ URL:  GET /  (响应头)
 
 推理: 仅响应头版本指纹，无 PII/业务数据/内网信息。
 → 证据不足  决策: ❌ 自动剔除（无意义信息泄露：仅框架指纹）
+──────────────────────────────────
+```
+
+通过输出示例：
+```
+─── 审查 [1/8] F-YYY ───
+类型: idor  原等级: High
+URL:  GET /api/exercises/216400/statistics/list_student_score_by_question_type.json
+证据: HTTP 200，返回其他课程全部学生姓名+学籍号（共 847 条），未验证课程注册关系
+
+推理: PoC 直接返回跨课程 PII 数据，无需身份绑定，IDOR 确凿。
+→ 确凿  复核等级: Critical  决策: ✅ 通过
 ──────────────────────────────────
 ```
 
