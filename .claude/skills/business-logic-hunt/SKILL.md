@@ -14,7 +14,6 @@ allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit
 |------|-----|
 | DBS_DIR | `E:\SRC挖掘\SRC\dbs` |
 | DB 操作 | `TOOLS/db_query.py` |
-| Burp 历史 | `mcp__burp__list_proxy_http_history` / `get_proxy_http_detail` |
 | MiniMax | `mmx text chat --message` |
 | 代理预热 | `.\TOOLS\clash-helper.ps1; Enable-ClashProxyEnv` |
 
@@ -227,11 +226,11 @@ RISK_MAP = {
 ### 三层重放核心
 
 ```python
-# 1. 从 burp_history_id 获取原始请求
+# 1. 从 hunt_queue 读取 (method, url, query_string, body, content_type) 重构请求
 # 2. 用 primary token 替换 Cookie/Authorization → A 请求
 # 3. 用 secondary token 替换 → B 请求
 # 4. 删除 Cookie 和 Authorization header → unauth 请求
-# 5. 三个请求逐一通过 Burp 发送
+# 5. 三个请求逐一发送（通过 Burp 代理 127.0.0.1:8080 或直连）
 # 6. 记录每个响应的 status/body/length
 ```
 
@@ -295,21 +294,22 @@ python3 TOOLS/db_query.py --target "{目标}" \
   "SELECT COALESCE(MAX(CAST(SUBSTR(id,7) AS INTEGER)), 0)+1 FROM findings WHERE id LIKE 'F-BLH-%'"
 ```
 
+# burp_request_id: 若 hunt_queue 来自 DB 三路（非 Burp 历史），则为 NULL
 ```bash
 python3 TOOLS/db_query.py --target "{目标}" \
   "INSERT INTO findings (id, sp_id, target_id, type, url, param, method, payload, evidence, risk, cvss, remediation, confirmed_at, burp_request_id, review_status, audit_status) \
-   VALUES ('F-BLH-{seq}', 'BLH-{endpoint_id}', (SELECT id FROM targets WHERE target_name='{目标}'), 'business_{test_type}', '{url}', '{param}', '{method}', '{payload}', '{evidence}', '{risk}', '', '{remediation}', datetime('now','localtime'), {burp_request_id}, NULL, 'pending')" \
+   VALUES ('F-BLH-{seq}', 'BLH-{endpoint_id}', (SELECT id FROM targets WHERE target_name='{目标}'), 'business_{test_type}', '{url}', '{param}', '{method}', '{payload}', '{evidence}', '{risk}', '', '{remediation}', datetime('now','localtime'), {burp_request_id or NULL}, NULL, 'pending')" \
   --write
 ```
 
-risk: idor=High, unauth=High, info_leak=High, password_reset_takeover=Critical, param_logic=High, user_enum=Medium, captcha_reuse=Medium
+risk: 见上方 RISK_MAP（vertical_priv_esc=High, batch_idor=High 已包含）
 
 ### 写 suspicious_points（low_confidence）
 
 ```bash
 python3 TOOLS/db_query.py --target "{目标}" \
   "INSERT INTO suspicious_points (id, page_url, url, param, method, test_type, evidence, source, reasoning, risk, test_status, burp_request_id, created_at) \
-   VALUES ('SP-BLH-{seq}', '{url}', '{url}', '{param}', '{method}', 'business_{test_type}', '{evidence}', 'business_logic_hunt', '{reasoning}', 'Medium', 'untested', {burp_request_id}, datetime('now','localtime'))" \
+   VALUES ('SP-BLH-{seq}', '{url}', '{url}', '{param}', '{method}', 'business_{test_type}', '{evidence}', 'business_logic_hunt', '{reasoning}', 'Medium', 'untested', {burp_request_id or NULL}, datetime('now','localtime'))" \
   --write
 ```
 
