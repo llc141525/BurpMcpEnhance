@@ -1,4 +1,4 @@
-from utils.compare import compare_unauth
+from utils.compare import compare_batch_idor, compare_unauth, compare_vertical_priv_esc
 
 
 class TestCompareUnauth:
@@ -46,9 +46,6 @@ class TestCompareUnauth:
 
         assert verdict == "low_confidence"
         assert "no_bearer" in evidence
-
-
-from utils.compare import compare_batch_idor, compare_vertical_priv_esc
 
 
 class TestCompareVerticalPrivEsc:

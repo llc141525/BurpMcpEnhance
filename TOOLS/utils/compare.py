@@ -149,7 +149,14 @@ def compare_vertical_priv_esc(
     b_status: int,
     b_body: str,
 ) -> tuple[str, str]:
-    """a=primary（普通用户），b=teacher/admin（高权限，b_status=0 表示无会话）。"""
+    """a=primary（普通用户），b=teacher/admin（高权限，b_status=0 表示无会话）。
+
+    Returns (verdict, evidence):
+      "confirmed"             — 垂直越权确认
+      "false_positive"        — 权限合理或接口公开
+      "needs_teacher_account" — primary 返回 403 但无高权限 session 可验证；
+                                调用方应写入 suspicious_points 并提示操作员提供账号。
+    """
     if a_status == 500:
         return "confirmed", f"a_status=500 missing require_login; response={a_body[:120]}"
     if a_status == 200:
@@ -174,14 +181,16 @@ def compare_batch_idor(
     """a=variant①(A+[A_id]基线), b=variant②(B+[A_id]), unauth=variant③(A+[A_id,B_id])。"""
     if a_status != 200:
         return "false_positive", f"baseline variant① a_status={a_status}, not a batch endpoint"
+    # >20 bytes filters out empty/error stubs; >50 would exclude compact API responses (~35 bytes).
     if b_status == 200 and len(b_body) > 20:
         s = _sim(a_body, b_body)
         if s > 0.7:
             return "confirmed", f"variant② B+[A_id] succeeded sim={s:.2f}, cross-account operation"
+    # >20 bytes filters out empty/error stubs; >50 would exclude compact API responses (~35 bytes).
     if unauth_status == 200 and len(unauth_body) > 20:
-        s = _sim(a_body, unauth_body)
-        if s > 0.7:
-            return "confirmed", f"variant③ A+[A_id,B_id] succeeded sim={s:.2f}, batch IDOR"
+        s3 = _sim(a_body, unauth_body)
+        if s3 > 0.7:
+            return "confirmed", f"variant③ A+[A_id,B_id] succeeded sim={s3:.2f}, batch IDOR"
     if b_status == 200 or unauth_status == 200:
         return (
             "low_confidence",
