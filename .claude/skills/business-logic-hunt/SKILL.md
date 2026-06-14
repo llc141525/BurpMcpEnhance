@@ -72,7 +72,7 @@ python3 TOOLS/db_query.py --target "{目标}" "UPDATE hunt_queue SET status='que
 
 ## 容错
 
-1. Burp MCP 调用失败 → 等待 2 秒重试 → 最多 3 次
+1. HTTP 请求失败（连接超时/代理拒绝）→ 等待 2 秒重试 → 最多 3 次
 2. SQLite busy → 等待 1 秒重试 → 最多 3 次
 3. 单个端点失败 → 标 error 跳过，继续下一条
 4. A 账号 session 过期（302/401） → 调 `python3 TOOLS/auth/session_manager.py --target "{目标}"` 续期；续期成功后重试当前端点；续期失败则停止并输出 `[AUTH_BARRIER]`
@@ -190,6 +190,7 @@ python3 TOOLS/db_query.py --target "{目标}" \
 
 ```bash
 python3 TOOLS/db_query.py --target "{目标}" \
+  # burp_history_id may be NULL for DB-sourced rows; always pass as NULL to findings/SP INSERTs
   "SELECT id, method, url, query_string, body, content_type, burp_history_id, endpoint_type, business_intent, risk_hint \
    FROM hunt_queue WHERE status='queued' \
    ORDER BY CASE risk_hint WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, id LIMIT 5"
@@ -334,7 +335,7 @@ python3 TOOLS/db_query.py --target "{目标}" \
 本轮 low_confidence（待 vuln-review 复核）:
   SP-BLH-{id} {type} {method} {url}
 
-本轮 Burp 请求: ~{n}
+本轮 HTTP 请求: ~{n}
 如需复核 SP-BLH-*: vuln-review
 如需切换 IP: Switch-ClashProxy
 ```
@@ -343,5 +344,5 @@ python3 TOOLS/db_query.py --target "{目标}" \
 
 - A 账号 session 过期 → 暂停，提示重新登录
 - 高危漏洞（password_reset_takeover confirmed）→ 升级操作员确认合规性
-- Burp MCP 不可用 → 退出
+- HTTP 代理不可用（127.0.0.1:8080 连接拒绝）→ 退出
 - mmx 连续异常 → 退出

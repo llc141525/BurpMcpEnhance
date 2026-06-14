@@ -151,3 +151,17 @@ class TestCompareBatchIdor:
         )
         assert verdict == "false_positive"
         assert "baseline" in evidence
+
+    def test_variant2_200_body_too_short_is_low_confidence(self):
+        baseline = '{"code":0,"data":{"items":[{"id":101,"score":95}]}}'
+        stub = '{"ok":true}'  # 12 bytes, <= 20 byte threshold
+        verdict, evidence = compare_batch_idor(
+            200,
+            baseline,
+            200,
+            stub,  # ② 200 but body too short to confirm
+            0,
+            "",
+        )
+        assert verdict == "low_confidence"
+        assert "body too short" in evidence
