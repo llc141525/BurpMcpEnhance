@@ -78,7 +78,7 @@ def ensure_session_valid(target: str, db_path: Path, conn: sqlite3.Connection) -
         return True  # 无需认证的目标直接通过
 
     result = subprocess.run(  # noqa: S603
-        [PYTHON, str(TOOLS_DIR / "auth" / "session_manager.py"), "--target", target],
+        [PYTHON, str(TOOLS_DIR / "auth" / "session_manager.py"), "--target", target, "--role", "primary"],
         timeout=400,
         check=False,
     )
@@ -113,8 +113,12 @@ def spider_next_phase(queue_count: int) -> str | None:
 
 
 def probe_next_phase(new_sp: int) -> str | None:
-    """无新 SP → 'brute'，否则 None（继续展示 SP）。"""
-    return "brute" if new_sp == 0 else None
+    """无新 SP → 'exploit'，否则 None（继续展示 SP）。"""
+    return "exploit" if new_sp == 0 else None
+
+
+def exploit_next_phase() -> str:
+    return "brute"
 
 
 def build_spider_summary(
@@ -187,7 +191,7 @@ def handle_spider(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     subprocess.run(  # noqa: S603
         [PYTHON, str(PIPELINE_DIR / "bfs_crawl.py"), "--target", target, "--depth", "3"],
-        timeout=300,
+        timeout=600,
         check=False,
     )
 
@@ -253,7 +257,45 @@ def handle_probe(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
         return
 
     set_phase(conn, next_phase)
-    print_tag("PHASE_TRANSITION", [f"probe → {next_phase}    无新可疑点，进入目录爆破"])
+    print_tag("PHASE_TRANSITION", [f"probe → {next_phase}    无新可疑点，进入框架专项 exploit 阶段"])
+
+
+def handle_exploit(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    print("[run_scan] phase=exploit → 运行 framework_exploit.py ...")
+    fe_result = subprocess.run(  # noqa: S603
+        [PYTHON, str(PIPELINE_DIR / "framework_exploit.py"), "--target", target],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if fe_result.stdout:
+        for line in fe_result.stdout.splitlines():
+            if line.startswith("[UNKNOWN_FRAMEWORK]"):
+                names = line.split("] ", 1)[-1]
+                print_tag(
+                    "UNKNOWN_FRAMEWORK",
+                    [
+                        f"以下框架不在知识库中: {names}",
+                        "用 Claude WebSearch 查 CVE 后手动补写 SP:",
+                        "  WebSearch('框架名 CVE RCE 漏洞 2024 2025')",
+                    ],
+                )
+            else:
+                print(line)
+
+    # SQLi 扫描（仅当有含参 URL 时）
+    param_count = conn.execute("SELECT count(*) FROM pages WHERE url LIKE '%?%'").fetchone()[0]
+    if param_count > 0:
+        print(f"[run_scan] phase=exploit → 运行 sqli_scan.py (含参URL={param_count}) ...")
+        subprocess.run(  # noqa: S603
+            [PYTHON, str(PIPELINE_DIR / "sqli_scan.py"), "--target", target, "--batch", "5"],
+            timeout=1800,
+            check=False,
+        )
+
+    set_phase(conn, exploit_next_phase())
+    print_tag("PHASE_TRANSITION", ["exploit → brute    框架专项 + SQLi 扫描完成"])
 
 
 def handle_brute(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
@@ -395,6 +437,7 @@ HANDLERS = {
     "init": handle_init,
     "spider": handle_spider,
     "probe": handle_probe,
+    "exploit": handle_exploit,
     "brute": handle_brute,
     "reflect": handle_reflect,
     "auth_ready": handle_auth_ready,

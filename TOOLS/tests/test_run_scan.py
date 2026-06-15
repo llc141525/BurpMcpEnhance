@@ -21,6 +21,7 @@ if str(_TOOLS) not in sys.path:
 from run_scan import (
     build_auth_barrier_lines,
     build_spider_summary,
+    exploit_next_phase,
     get_phase,
     get_queue_count,
     get_sp_count,
@@ -153,8 +154,8 @@ class TestSpiderNextPhase:
 
 
 class TestProbeNextPhase:
-    def test_no_new_sp_returns_brute(self):
-        assert probe_next_phase(new_sp=0) == "brute"
+    def test_no_new_sp_transitions_to_exploit(self):
+        assert probe_next_phase(new_sp=0) == "exploit"
 
     def test_new_sp_found_returns_none(self):
         assert probe_next_phase(new_sp=3) is None
@@ -244,3 +245,11 @@ class TestNeedsRelogin:
             {"is_active": 1, "expires_at": "2099-01-01 00:00:00"},
         ]
         assert needs_relogin(sessions) is False
+
+
+# ── exploit_next_phase ────────────────────────────────────────────────────────
+
+
+class TestExploitNextPhase:
+    def test_always_returns_brute(self):
+        assert exploit_next_phase() == "brute"
