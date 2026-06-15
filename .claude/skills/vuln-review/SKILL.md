@@ -44,6 +44,22 @@ python3 TOOLS/db_query.py --target "{目标名}" "SELECT phase FROM scan_state W
 | 返回 phase | 继续 |
 | 空 | 输出"请先运行 stealth-scanner" 后停止 |
 
+### Session 续期检查
+
+```bash
+python3 TOOLS/auth/session_manager.py --target "{目标名}"
+```
+
+- 退出码 0 → session 有效（或已自动续期）→ 继续
+- 退出码 1 → 输出以下提示后退出：
+  ```
+  [AUTH_BARRIER] Session 已过期，自动续期失败。
+  请手动登录后执行:
+    python TOOLS/db/db_query.py --target "{目标名}" "UPDATE scan_state SET phase='auth_ready' WHERE id=1" --write
+  如 login_url 未存储，加参数:
+    python3 TOOLS/auth/session_manager.py --target "{目标名}" --login-url "https://sso.example.com/login?..."
+  ```
+
 ## 容错规则
 
 1. **重试** — Burp MCP 调用失败后：等待 2 秒重试，最多 3 次。失败则跳过该条。
@@ -52,7 +68,7 @@ python3 TOOLS/db_query.py --target "{目标名}" "SELECT phase FROM scan_state W
 
 ## MiniMax 路由
 
-Burp 响应体 >5KB、DB 结果 >10 行、JS/HTML >5KB — 先给 mmx 处理，Claude 只读精简结果。
+遵循 `Skill(skill="mmx-router")` 的路由规则。PoC 响应对比使用 mmx-router 的 **PoC 响应差异分析** 模板。
 
 ## 关键包保留规则
 
@@ -337,6 +353,18 @@ Phase B 非自动——由 Claude 判断是否值得深入。对于大部分 `sq
 
 Suppressions 生效: {n} 个类型被跳过
 ```
+
+## framework_exploit / sqli_scan 来源处理
+
+**source = 'framework_exploit'**（由 `pipeline/framework_exploit.py` 写入）:
+- 对应具体 CVE 攻击路径，误报率低，优先验证
+- 验证方式：Burp 重发对应请求，确认 success_pattern 命中
+- 确认后直接写 findings，无需额外变种测试
+
+**source = 'sqli_scan'**（由 `pipeline/sqli_scan.py` 写入 findings 表）:
+- sqlmap 已完成自动确认，findings 表中记录即为有效 PoC
+- 直接进入 src-report 报告流程，跳过 PoC 重验步骤
+- 报告中附上 sqlmap payload 作为 PoC 证据
 
 ## 协作约定
 
