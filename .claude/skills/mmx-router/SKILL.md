@@ -35,11 +35,9 @@ SRC 漏洞挖掘场景的文本ETL规范。定义**何时必须用 `etl_analyzer
 ## 调用方式
 
 ```bash
-# CLI 调用（stdin 输入）
-echo "{burp_json}" | uv run python TOOLS/utils/etl_analyzer.py --task filter_burp
-
-# CLI 调用（--data 参数）
-uv run python TOOLS/utils/etl_analyzer.py --task analyze_js --data "$(cat /tmp/target.js)"
+uv run python TOOLS/utils/etl_analyzer.py --task filter_burp --data "$(cat burp.json)"
+uv run python TOOLS/utils/etl_analyzer.py --task analyze_js --data "$(cat file.js)"
+uv run python TOOLS/utils/etl_analyzer.py --task filter_db --data "$(cat query_result.txt)"
 
 # 加额外指令
 uv run python TOOLS/utils/etl_analyzer.py --task classify_business \

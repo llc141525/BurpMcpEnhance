@@ -121,9 +121,9 @@
 
 CLI 用法：
 ```bash
-# 文本分析
-echo "{json}" | uv run python TOOLS/utils/etl_analyzer.py --task filter_burp
+uv run python TOOLS/utils/etl_analyzer.py --task filter_burp --data "$(cat burp.json)"
 uv run python TOOLS/utils/etl_analyzer.py --task analyze_js --data "$(cat file.js)"
+uv run python TOOLS/utils/etl_analyzer.py --task filter_db --data "$(cat query_result.txt)"
 ```
 
 ### 浏览器/引擎选择
