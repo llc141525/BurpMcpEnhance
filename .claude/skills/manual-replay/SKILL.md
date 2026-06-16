@@ -1,7 +1,7 @@
 ---
 name: manual-replay
-description: 操作员手工跑业务流程 → AI 变种攻击。时间窗口采集 Burp 历史 → mmx 分类 → 流分析 → 结构化变种生成 → 三层执行。覆盖 IDOR/未授权/参数逻辑/验证码复用/用户枚举/密码重置。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit
+description: 操作员手工跑业务流程 → AI 变种攻击。时间窗口采集 Burp 历史 → etl_analyzer 分类 → 流分析 → 结构化变种生成 → 三层执行。覆盖 IDOR/未授权/参数逻辑/验证码复用/用户枚举/密码重置。
+allowed-tools: mcp__burp__*, Bash, Read, Write, Edit
 ---
 
 # manual-replay
@@ -15,7 +15,7 @@ allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit
 | DBS_DIR | `E:\SRC挖掘\SRC\dbs` |
 | DB 操作 | `TOOLS/db_query.py` |
 | Burp 历史 | `mcp__burp__list_proxy_http_history` / `get_proxy_http_detail` |
-| MiniMax | `mmx text chat --message` |
+| ETL分析 | `uv run python TOOLS/utils/etl_analyzer.py --task <task>` |
 | 代理预热 | `.\TOOLS\clash-helper.ps1; Enable-ClashProxyEnv` |
 
 ## 入口
@@ -32,16 +32,18 @@ Skill(skill="manual-replay", args="目标: 台州学院; 模式: replay")
 ### 入口检查
 
 ```bash
-python3 TOOLS/db_query.py --target "{目标}" "SELECT count(*) FROM auth_sessions WHERE is_active=1 AND role='primary'"
-python3 TOOLS/db_query.py --target "{目标}" "SELECT count(*) FROM auth_sessions WHERE is_active=1 AND role='secondary'"
+python3 TOOLS/auth/session_manager.py --target "{目标}"
 ```
 
-Primary >=1 且 secondary >=1 → 继续。否则输出：
-```
-请准备 primary + secondary 账号。
-primary: 已有 token 自动 role='primary'（默认）
-secondary: INSERT INTO auth_sessions (token_name, token_value, domain, role, is_active) VALUES ('JSESSIONID', 'xxx', 'example.com', 'secondary', 1);
-```
+- 退出码 0 → session 有效（或已自动续期）→ 继续
+- 退出码 1 → 输出以下提示后退出：
+  ```
+  [AUTH_BARRIER] Session 已过期，自动续期失败。
+  请手动登录后执行:
+    python TOOLS/db/db_query.py --target "{目标}" "UPDATE scan_state SET phase='auth_ready' WHERE id=1" --write
+  如 login_url 未存储，加参数:
+    python3 TOOLS/auth/session_manager.py --target "{目标}" --login-url "https://sso.example.com/login?..."
+  ```
 
 ### 迁移检查
 
@@ -98,68 +100,23 @@ mcp__burp__list_proxy_http_history(count=500, offset=1500)
 - 去重：同 method+url 保留 time 最早的
 ```
 
-写入临时文件供 mmx 分析：
+写入临时文件供分析：
 ```bash
 echo '{过滤后的JSON}' > tmp/manual_replay_raw_{target}_{ts}.json
 ```
 
-### 3. mmx 意图分类
+### 3. etl_analyzer 意图分类
 
-写入 `tmp/manual_replay_filter_prompt.txt`:
-```
-你是 SRC 渗透测试助手，从 Burp HTTP 历史列表中筛选出手工操作流程中的"业务接口"。
+将过滤后的 JSON 写入 `tmp/manual_replay_raw_{target}_{ts}.json`，调用：
 
-输出 JSON 数组，每条:
-{
-  "burp_history_id": <int>,
-  "method": "POST",
-  "url": "https://example.com/api/order/create",
-  "endpoint_type": "business_api" | "auth_login" | "auth_register" | "auth_reset_password" | "auth_verify_code" | "flow_step",
-  "business_intent": "<一句话业务含义，如:创建订单>",
-  "flow_step": <int, 同一次流程的步骤序号，从1开始, 独立请求标0>,
-  "risk_hint": "High" | "Medium" | "Low",
-  "auth_required": true | false
-}
-
-flow_step 规则:
-- 属于同一业务流程的请求按执行顺序编号（如注册流程: 1=提交手机号, 2=填写验证码, 3=设置密码）
-- 独立请求（查询字典、获取列表等）标 0
-
-判定规则:
-- auth_login/register/reset_password/verify_code: URL 含 login/register/reset/forget/sms/captcha 等
-- business_api: URL 含 /api/ 或 .do/.action 且非登录类
-- flow_step > 0: 请求属于同一业务流程链
-- risk_hint=High: 含 id/uid/oid 参数 或 method=DELETE/PUT 或涉及支付/订单
-- risk_hint=Medium: 普通 GET 查询业务数据
-- risk_hint=Low: 字典/枚举查询（/dict, /options, /list 无参数）
-
-排除:
-- 第三方 CDN/统计/广告域名
-- 同 URL 去重保留 risk_hint 最高且 flow_step 不为空的
-- 仅 health check / version 端点
-
-返回纯 JSON 数组，不要 markdown 围栏或解释文字。
-```
-
-调用：
 ```bash
-mmx text chat --message "$(cat tmp/manual_replay_filter_prompt.txt)" --stdin < tmp/manual_replay_raw_{target}_{ts}.json
+uv run python TOOLS/utils/etl_analyzer.py \
+  --task classify_business \
+  --instruction "额外要求：每条增加 flow_step 字段（同一流程按顺序从1起，独立请求标0）；以及 auth_required 字段（true|false）" \
+  --data "$(cat tmp/manual_replay_raw_{target}_{ts}.json)"
 ```
 
-输出容错（同 business-logic-hunt 模式）：
-```python
-raw = mmx_output
-try:
-    data = json.loads(raw)
-except json.JSONDecodeError:
-    start = raw.find('[')
-    end = raw.rfind(']')
-    if start >= 0 and end > start:
-        data = json.loads(raw[start:end+1])
-    else:
-        print("[错误] mmx 输出无法解析，已写入 tmp/manual_replay_mmx_error_{ts}.txt")
-        exit()
-```
+输出容错：JSON 解析失败时从原始输出提取 `[...]` 块；仍失败则写入 `tmp/manual_replay_etl_error_{ts}.txt` 后退出。
 
 ### 4. 获取完整请求 + 入队
 
@@ -199,37 +156,14 @@ python3 TOOLS/db_query.py --target "{目标}" \
 
 ### 2. 流分析
 
-对全部请求执行 AI 流分析（`mmx text chat`）：
+将请求序列写入 `tmp/manual_replay_requests_{target}_{ts}.json`，调用：
 
-Prompt:
+```bash
+uv run python TOOLS/utils/etl_analyzer.py \
+  --task analyze_flow \
+  --data "$(cat tmp/manual_replay_requests_{target}_{ts}.json)" \
+  > tmp/manual_replay_flow_{target}_{ts}.json
 ```
-分析以下 HTTP 请求序列，输出 JSON:
-{
-  "flow_chains": [
-    {
-      "chain_id": 1,
-      "steps": [1, 2, 3],
-      "flow_name": "创建订单流程",
-      "state_params": {"order_id": "请求2的响应→请求3的请求"},
-      "auth_context": "primary"
-    }
-  ],
-  "cross_request_params": [
-    {"param_name": "token", "source_request_id": 1, "target_request_id": 2}
-  ]
-}
-
-请求序列:
-{请求序列JSON}
-
-规则:
-- flow_chains: 识别属于同一流程的请求链（flow_step > 0 的连续序列）
-- state_params: 标注跨请求传递的参数（如 token、orderId）
-- cross_request_params: 标注同一参数名在相邻请求间出现的位置
-- auth_context: 根据 Cookie/Authorization 判断使用的身份
-```
-
-输出写入 `tmp/manual_replay_flow_{target}_{ts}.json`。
 
 ## Phase: variant_gen
 
@@ -241,49 +175,12 @@ FLOW_DATA=$(cat tmp/manual_replay_flow_{target}_{ts}.json)
 
 ### 2. AI 变种生成
 
-对每个端点，按 `business_intent` 映射变种模板：
+对每个端点，将请求上下文（url/method/body/business_intent/risk_hint/auth_required/flow_chain/cross_request_params）写入 `tmp/manual_replay_req_{id}.json`，调用：
 
-Prompt:
-```
-你是一个 Web 安全测试的变种生成器。给定一个 HTTP 请求及其业务意图，生成可能的安全测试变种。
-
-请求:
-- URL: {url}
-- Method: {method}
-- Query: {query_string}
-- Body: {body}
-- Content-Type: {content_type}
-- Business Intent: {business_intent}
-- Risk Hint: {risk_hint}
-- Auth Required: {auth_required}
-- Flow Chain: {flow_chain_id}, Step {flow_step}
-
-跨请求参数传递:
-{cross_request_params}
-
-输出 JSON 数组，每条变种:
-{
-  "test_type": "idor"|"unauth"|"param_logic"|"user_enum"|"captcha_reuse"|"password_reset_takeover"|"info_leak",
-  "target_param": "要修改的参数名",
-  "original_value": "原始值",
-  "replacement_value": "替换值",
-  "modification": "replace_param"|"remove_auth"|"replace_cookie"|"remove_param"|"add_param",
-  "description": "变种说明"
-}
-
-业务意图→变种映射:
-- 用户注册/登录: user_enum, bruteforce_bypass
-- 验证码校验: captcha_reuse, captcha_bypass
-- 创建订单: idor(替换user_id), param_logic(改价格/数量), unauth
-- 查询订单: idor(替换order_id), info_leak, unauth
-- 修改订单: idor, param_logic(状态/金额), unauth
-- 密码重置: password_reset_takeover(替换手机/邮箱)
-- 用户信息: idor(替换uid), info_leak
-- 文件上传: file_type_bypass, unauth
-- 支付/扣款: param_logic(金额/数量/货币), idor, unauth
-- 通用查询: unauth, info_leak
-
-返回纯 JSON 数组，5-15 条变种。
+```bash
+uv run python TOOLS/utils/etl_analyzer.py \
+  --task generate_variants \
+  --data "$(cat tmp/manual_replay_req_{id}.json)"
 ```
 
 对每个端点执行并汇总所有变种。
@@ -333,29 +230,16 @@ def apply_variant(original_request, variant):
 
 ### 2. 快速响应判定
 
-```python
-A = primary_response
-B = secondary_response  # 仅 idor 类需要
-unauth = unauth_response  # 仅 unauth 类需要
+每条变种请求发完后，调用比对脚本：
 
-from difflib import SequenceMatcher
-
-def is_confirmed(test_type, A, B=None, unauth=None):
-    if test_type == 'idor' and B:
-        sim = SequenceMatcher(None, A['body'], B['body']).ratio()
-        return sim > 0.85, sim
-    elif test_type == 'unauth' and unauth:
-        if unauth['status'] == 200 and len(unauth['body']) > 100:
-            sim = SequenceMatcher(None, A['body'], unauth['body']).ratio()
-            return sim > 0.85, sim
-    elif test_type == 'param_logic':
-        return A['status'] == 200 and 'success' in A['body'].lower(), 0
-    elif test_type == 'info_leak':
-        import re
-        leaks = re.findall(r'1[3-9]\d{9}|\d{17}[\dXx]|[\w.-]+@[\w.-]+', A['body'])
-        return len(leaks) > 3, len(leaks)
-    # ... 其他类型
-    return False, 0
+```bash
+python TOOLS/utils/compare.py \
+  --test-type {test_type} \
+  --a-status {A状态码} --a-body '{A响应体}' \
+  [--b-status {B状态码} --b-body '{B响应体}'] \
+  [--unauth-status {unauth状态码} --unauth-body '{unauth响应体}'] \
+  [--target-param {参数名}]
+# 输出: {"verdict": "confirmed|low_confidence|false_positive", "evidence": "..."}
 ```
 
 ### 3. 写 findings（confirmed）
@@ -423,15 +307,15 @@ python3 TOOLS/db_query.py --target "{目标}" \
 | Burp MCP 调用失败 | 等待 2 秒重试 → 最多 3 次 |
 | SQLite busy | 等待 1 秒重试 → 最多 3 次 |
 | 时间窗口内无请求 | 提示"时间窗口内无目标域名请求"，退出 |
-| mmx 分类失败 | 内置兜底提取 → 仍失败则退出 |
+| etl_analyzer 分类失败 | 内置兜底提取 → 仍失败则退出 |
 | 单变种执行失败 | 标 error，继续下一条 |
-| A/B 账号 session 过期（302/401） | 标 error + notes，提示重登 |
+| A/B 账号 session 过期（302/401） | 调 `python3 TOOLS/auth/session_manager.py --target "{目标}"` 续期；成功后重试；失败则停止输出 `[AUTH_BARRIER]` |
 | WAF 拦截（403/451） | 标 error + notes="WAF blocked"，跳过 |
-| mmx JSON 解析失败 | 内置兜底提取 → 仍失败则退出 |
+| etl_analyzer JSON 解析失败 | 内置兜底提取 → 仍失败则退出 |
 
 ## 升级操作员
 
-- A 账号 session 过期 → 暂停，提示重新登录
+- A 账号 session 过期且 `session_manager.py` 续期失败 → 暂停，输出 `[AUTH_BARRIER]`，等待操作员手动登录
 - 高危漏洞（password_reset_takeover confirmed）→ 暂停，升级操作员确认合规性
 - Burp MCP 不可用 → 退出
-- mmx 连续异常 → 退出
+- etl_analyzer 连续异常 → 退出
