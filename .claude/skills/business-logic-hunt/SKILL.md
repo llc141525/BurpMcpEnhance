@@ -1,7 +1,7 @@
 ---
 name: business-logic-hunt
-description: 业务逻辑漏洞主动猎手。DB三路收集（auth_explore XHR + JS静态分析 + probe可疑点）+ 内置浏览器探索（不依赖stealth-scanner）→ A/B双账号+未授权三层重放 → 写 findings。覆盖 IDOR/垂直越权/批量IDOR/未授权/信息泄露/验证码缺陷/用户枚举/密码重置/参数逻辑。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit
+description: 业务逻辑漏洞主动猎手。DB三路收集（auth_explore XHR + JS静态分析 + probe可疑点）+ 内置浏览器探索（不依赖stealth-scanner）→ A/B双账号+未授权三层重放 → 写 findings。覆盖 IDOR/垂直越权/批量IDOR/未授权/信息泄露/验证码缺陷/用户枚举/密码重置/参数逻辑/边界值注入。
+allowed-tools: mcp__burp__*, Bash, Read, Write, Edit
 ---
 
 # business-logic-hunt
@@ -14,7 +14,7 @@ allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit
 |------|-----|
 | DBS_DIR | `E:\SRC挖掘\SRC\dbs` |
 | DB 操作 | `TOOLS/db_query.py` |
-| MiniMax | `mmx text chat --message` |
+| ETL分析 | `uv run python TOOLS/utils/etl_analyzer.py --task classify_business` |
 | 代理预热 | `.\TOOLS\clash-helper.ps1; Enable-ClashProxyEnv` |
 
 ## 入口
@@ -77,7 +77,7 @@ python3 TOOLS/db_query.py --target "{目标}" "UPDATE hunt_queue SET status='que
 3. 单个端点失败 → 标 error 跳过，继续下一条
 4. A 账号 session 过期（302/401） → 调 `python3 TOOLS/auth/session_manager.py --target "{目标}"` 续期；续期成功后重试当前端点；续期失败则停止并输出 `[AUTH_BARRIER]`
 5. WAF 拦截（403/451） → 标 error + notes="WAF blocked"，跳过
-6. mmx JSON 解析失败 → 兜底提取 → 仍失败退出
+6. etl_analyzer JSON 解析失败 → 兜底提取 → 仍失败退出
 
 ## Phase: explore（自包含浏览器探索）
 
@@ -168,7 +168,7 @@ python3 TOOLS/db_query.py --target "{目标}" \
 ```
 三路合并 → 按 (method, url) 去重
 → 写临时文件 tmp/blh_collect_{target}_{ts}.json
-→ mmx 做业务意图分类（endpoint_type + business_intent）
+→ etl_analyzer（task=classify_business）做业务意图分类（endpoint_type + business_intent）
   admin_api 识别规则：URL 含 /admin/ /manage/ /teacher/ /staff/ /system/，
   或 DELETE/PATCH 且路径模式为 /api/{resource}/{id}
 → 按 endpoint_type 写 hunt_queue（source='auto'）
@@ -203,6 +203,7 @@ TYPE_MAP = {
     # 新增
     'admin_api':           ['vertical_priv_esc', 'unauth'],
     'batch_api':           ['batch_idor', 'unauth'],
+    'payment_api':         ['boundary_value', 'idor'],
     # 原有
     'business_api':        ['idor', 'unauth', 'info_leak', 'param_logic'],
     'auth_login':          ['user_enum', 'captcha_reuse'],
@@ -215,6 +216,7 @@ RISK_MAP = {
     'idor':                    'High',
     'vertical_priv_esc':       'High',
     'batch_idor':              'High',
+    'boundary_value':          'High',
     'unauth':                  'High',
     'info_leak':               'Medium',
     'password_reset_takeover': 'Critical',
@@ -223,6 +225,9 @@ RISK_MAP = {
     'captcha_reuse':           'Medium',
 }
 ```
+
+#### payment_api 识别规则（mmx 分类时）
+URL 含 `/pay/` `/payment/` `/order/` `/cart/` `/checkout/` `/price/` `/amount/` `/coupon/` `/discount/`，或 body/query 含 `price`/`amount`/`quantity`/`count`/`total`/`credit` 等数值参数。
 
 ### 三层重放核心
 
@@ -241,7 +246,7 @@ RISK_MAP = {
 
 ```bash
 python TOOLS/utils/compare.py \
-  --test-type {idor|unauth|info_leak|param_logic|user_enum|captcha_reuse|password_reset_takeover|vertical_priv_esc|batch_idor} \
+  --test-type {idor|unauth|info_leak|param_logic|user_enum|captcha_reuse|password_reset_takeover|vertical_priv_esc|batch_idor|boundary_value} \
   --a-status {A状态码} --a-body '{A响应体}' \
   [--b-status {B状态码} --b-body '{B响应体}'] \
   [--unauth-status {unauth状态码} --unauth-body '{unauth响应体}'] \
@@ -280,6 +285,21 @@ python TOOLS/utils/compare.py --test-type batch_idor \
   --b-status {变种②状态} --b-body '{变种②响应}' \
   --unauth-status {变种③状态} --unauth-body '{变种③响应}'
 # ①=A+[A_id]基线  ②=B+[A_id]  ③=A+[A_id,B_id]
+```
+
+#### boundary_value（边界值注入）构造变种
+
+目标参数（price/amount/quantity/count/credit 等数值字段）逐一替换为：`-1`、`0`、`0.01`、`99999999`。
+
+```bash
+# 正常值基线（a）
+python TOOLS/utils/compare.py --test-type boundary_value \
+  --a-status {正常响应状态} --a-body '{正常响应体}' \
+  --b-status {边界值响应状态} --b-body '{边界值响应体}' \
+  --target-param price
+# confirmed → 边界值被服务端接受（价格篡改成功）→ 写 findings
+# low_confidence → 200 但无明确成功/失败信号 → 写 suspicious_points
+# false_positive → 边界值被拒绝（正确校验）→ 跳过
 ```
 
 ### 写 findings（confirmed）
@@ -345,4 +365,4 @@ python3 TOOLS/db_query.py --target "{目标}" \
 - A 账号 session 过期 → 暂停，提示重新登录
 - 高危漏洞（password_reset_takeover confirmed）→ 升级操作员确认合规性
 - HTTP 代理不可用（127.0.0.1:8080 连接拒绝）→ 退出
-- mmx 连续异常 → 退出
+- etl_analyzer 连续异常 → 退出
