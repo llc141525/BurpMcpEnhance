@@ -50,7 +50,7 @@ python3 TOOLS/db/db_query.py --target "{目标}" --check
 
 ## 状态机
 
-phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spider` ↔ `probe` → `exploit` → `brute` → `spider`
+phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spider` ↔ `probe` → `api_fuzz` → `exploit` → `brute` → `spider`
 
 | phase            | 含义                      | 由 run_scan.py 调用的脚本                      |
 | ---------------- | ------------------------- | ---------------------------------------------- |
@@ -60,6 +60,7 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `auth_explore` | 认证后深度导航 + XHR 拦截 | `auth/auth_explore.py`                       |
 | `spider`       | BFS 爬取 + JS 两层分析    | `pipeline/bfs_crawl.py` + `js_analyzer.py` |
 | `probe`        | 参数 fuzz + nuclei 探测   | `pipeline/probe_runner.py`                   |
+| `api_fuzz`     | API 命名空间爆破：词列+模式推断探测隐藏 admin/teacher API → 写 `hunt_queue` | `pipeline/api_fuzz.py` |
 | `exploit`      | 框架专项 CVE 攻击链 + SQLi 扫描 | `pipeline/framework_exploit.py` + `pipeline/sqli_scan.py` |
 | `brute`        | 目录爆破                  | `pipeline/brutescan.py`                      |
 | `auth_timeout` | 登录超时，等待操作员重试  | —                                             |
@@ -77,6 +78,7 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `[NEW_SUSPICIOUS_POINTS]` | probe 发现新可疑点                   | 评估风险等级 → 高危转 vuln-review；再次调用 `run_scan.py` |
 | `[AUTH_BARRIER]`          | 发现认证壁垒或登录超时               | 告知操作员（见"登录流程"一节），等待恢复                     |
 | `[UNKNOWN_FRAMEWORK]`     | exploit 阶段检测到未知框架，不在 FRAMEWORK_KB 中 | 用内置 WebSearch 查 CVE："框架名 CVE RCE 漏洞 2024 2025"，结果手动写 SP |
+| `[API_FUZZ]`              | `probed={n} found={m} waf_rotations={k}`  hidden admin/teacher API 探测摘要 | 读摘要 → found>0 则评估风险；再次调用 `run_scan.py` |
 
 ### [NEW_SUSPICIOUS_POINTS] 处理细则
 
