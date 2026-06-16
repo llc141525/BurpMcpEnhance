@@ -4,7 +4,7 @@
   - get_phase / set_phase / get_queue_count / get_sp_count (纯 DB 读写)
   - build_spider_summary  (spider 阶段输出构建)
   - spider_next_phase     (队列空 → probe 决策)
-  - probe_next_phase      (无新 SP → brute 决策)
+  - probe_next_phase      (无新 SP → api_fuzz 决策)
   - build_auth_barrier_lines (AUTH_BARRIER 消息格式)
 """
 
@@ -154,8 +154,8 @@ class TestSpiderNextPhase:
 
 
 class TestProbeNextPhase:
-    def test_no_new_sp_transitions_to_exploit(self):
-        assert probe_next_phase(new_sp=0) == "exploit"
+    def test_no_new_sp_transitions_to_api_fuzz(self):
+        assert probe_next_phase(new_sp=0) == "api_fuzz"
 
     def test_new_sp_found_returns_none(self):
         assert probe_next_phase(new_sp=3) is None

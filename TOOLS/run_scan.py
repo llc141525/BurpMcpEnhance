@@ -113,8 +113,8 @@ def spider_next_phase(queue_count: int) -> str | None:
 
 
 def probe_next_phase(new_sp: int) -> str | None:
-    """无新 SP → 'exploit'，否则 None（继续展示 SP）。"""
-    return "exploit" if new_sp == 0 else None
+    """无新 SP → 'api_fuzz'，否则 None（继续展示 SP）。"""
+    return "api_fuzz" if new_sp == 0 else None
 
 
 def exploit_next_phase() -> str:
@@ -258,6 +258,33 @@ def handle_probe(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
 
     set_phase(conn, next_phase)
     print_tag("PHASE_TRANSITION", [f"probe → {next_phase}    无新可疑点，进入框架专项 exploit 阶段"])
+
+
+def handle_api_fuzz(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    """phase=api_fuzz: 探测隐藏 admin/teacher API 命名空间，写 hunt_queue。"""
+    print("[run_scan] phase=api_fuzz → 运行 api_fuzz.py ...")
+    _HQ_QUERY = "SELECT count(*) FROM hunt_queue WHERE source='auto' AND notes LIKE 'api_fuzz%'"
+    try:
+        before_hq = conn.execute(_HQ_QUERY).fetchone()[0]
+    except sqlite3.OperationalError:
+        before_hq = 0
+    subprocess.run(
+        [PYTHON, str(PIPELINE_DIR / "api_fuzz.py"), "--target", target],
+        timeout=600,
+        check=False,
+    )
+    try:
+        after_hq = conn.execute(_HQ_QUERY).fetchone()[0]
+    except sqlite3.OperationalError:
+        after_hq = 0
+    set_phase(conn, "exploit")
+    print_tag(
+        "PHASE_TRANSITION",
+        [
+            f"api_fuzz → exploit    新增 hunt_queue 条目: {after_hq - before_hq}",
+            "[run_scan] api_fuzz 完成，切换到 exploit",
+        ],
+    )
 
 
 def handle_exploit(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
@@ -437,6 +464,7 @@ HANDLERS = {
     "init": handle_init,
     "spider": handle_spider,
     "probe": handle_probe,
+    "api_fuzz": handle_api_fuzz,
     "exploit": handle_exploit,
     "brute": handle_brute,
     "reflect": handle_reflect,
