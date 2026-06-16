@@ -70,8 +70,7 @@
       "mcp__burp__exporter_stats",
       "mcp__burp__list_scanner_issues",
       "PowerShell(claude mcp *)",
-      "mcp__stealth-browser__*",
-      "mcp__minimax__*"
+      "mcp__stealth-browser__*"
     ],
     "deny": []
   },
@@ -106,7 +105,6 @@
     "stealth-browser",
     "burp",
     "chrome-devtools",
-    "scrapling",
-    "MiniMax"
+    "scrapling"
   ]
 }
