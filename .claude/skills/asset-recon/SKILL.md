@@ -1,7 +1,7 @@
 ---
 name: asset-recon
 description: 资产梳理 skill。使用 FOFA/ZoomEye 进行被动侦察，初始化目标 DB，写入 targets 表，自动入队待扫描资产。
-allowed-tools: mcp__MiniMax__*, mcp__burp__*, Bash, PowerShell, Read, Write, Edit, Skill, Glob
+allowed-tools: mcp__burp__*, Bash, PowerShell, Read, Write, Edit, Skill, Glob
 ---
 
 # asset-recon
@@ -115,13 +115,13 @@ python3 TOOLS/zoomeye_query.py -q 'site:"{主域名}"' --size 100 --json > tmp/z
 
 如果 ZoomEye API key 未配置或查询失败，输出 `[WARN] ZoomEye 查询失败: {reason}` 并记录结果为 0 条。
 
-### Step 6 — MiniMax 解析结果
+### Step 6 — etl_analyzer 解析结果
 
-对 FOFA 和 ZoomEye 的原始 JSON 输出，调用 MiniMax 解析：
+对 FOFA 和 ZoomEye 的原始 JSON 输出，调用 etl_analyzer 解析：
 
 ```bash
 # 合并两个结果文件，提取所有资产
-mmx text chat --output text --non-interactive --message "从以下侦察结果中提取所有资产，输出纯 JSON 数组，每个元素包含：
+uv run python TOOLS/utils/etl_analyzer.py --task filter_burp --instruction "从以下侦察结果中提取所有资产，输出纯 JSON 数组，每个元素包含：
 {\"domain\": \"子域名或IP\", \"ip\": \"IP\", \"port\": 80/443, \"tech_stack\": \"Apache/Vue/Spring等\", \"requires_auth\": true/false, \"notes\": \"备注\"}
 只输出 JSON，不要解释。
 
@@ -208,11 +208,11 @@ DB: dbs/{target_name}_{date}.db
 
 ---
 
-## MiniMax 路由规则
+## ETL 分析路由规则
 
 遵循 `mmx-router` skill 规范：
-- FOFA/ZoomEye 结果文件 >10 行 → `mmx text chat` 解析
-- Claude 不读原始 JSON，只处理 MiniMax 返回的精简 assets 数组
+- FOFA/ZoomEye 结果文件 >10 行 → `etl_analyzer.py --task filter_burp` 解析
+- Claude 不读原始 JSON，只处理 etl_analyzer 返回的精简 assets 数组
 - 解析失败时回退到手动 JSON 解析（逐条读取 sample 字段）
 
 ---

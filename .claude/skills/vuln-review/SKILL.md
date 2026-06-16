@@ -1,7 +1,7 @@
 ---
 name: vuln-review
 description: 安全漏洞 PoC 验证引擎。门控探测已修复类型 + WAF 绕过 + PoC 验证 + 价值决策树 + 双层变种分析，结果写入 findings/suppressions 表。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Skill
+allowed-tools: mcp__burp__*, Bash, Read, Write, Edit, Skill
 ---
 
 # vuln-review
@@ -66,9 +66,9 @@ python3 TOOLS/auth/session_manager.py --target "{目标名}"
 2. **SQLite 读失败** — 等待 1 秒重试，最多 3 次。
 3. **高危** — RCE/SQL 写 shell/任意文件上传，立即升级操作员，不继续。
 
-## MiniMax 路由
+## ETL 分析路由
 
-遵循 `Skill(skill="mmx-router")` 的路由规则。PoC 响应对比使用 mmx-router 的 **PoC 响应差异分析** 模板。
+遵循 `Skill(skill="mmx-router")` 的路由规则。PoC 响应对比使用 `etl_analyzer.py --task diff_responses`。
 
 ## 关键包保留规则
 

@@ -1,7 +1,7 @@
 ---
 name: src-report
 description: 生成面向 SRC 平台提交的漏洞报告。两阶段：Phase 1 证据评审 + 等级复核，Phase 2 逐漏洞写入独立报告文件。管理员可直接复制单个文件内容到 SRC 平台提交。
-allowed-tools: mcp__burp__*, Bash, Read, Write, Edit, AskUserQuestion, Glob, mcp__MiniMax__*
+allowed-tools: mcp__burp__*, Bash, Read, Write, Edit, AskUserQuestion, Glob
 ---
 
 # src-report

@@ -1,7 +1,7 @@
 ---
 name: stealth-scanner
 description: 网站爬虫与主动探测。BFS 发现页面/JS/端点（katana+httpx），框架指纹+参数fuzz+框架专项（nuclei+arjun）。机械动作全部由脚本完成，AI 只做分析判断。写 SQLite，不验证漏洞。每 10 轮写入 memory 进度总结。
-allowed-tools: mcp__burp__*, mcp__MiniMax__*, Bash, Read, Write, Edit, Grep, Glob, Skill
+allowed-tools: mcp__burp__*, Bash, Read, Write, Edit, Grep, Glob, Skill
 ---
 # stealth-scanner
 
@@ -27,7 +27,7 @@ python TOOLS/run_scan.py --target "{目标}"
 | 场景                             | 命令                                                                                                            |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | **启动/继续扫描**          | `python TOOLS/run_scan.py --target "{目标}"`                                                                  |
-| 单独 JS 分析（两层）              | `python TOOLS/js_analyzer.py --target "{目标}" --batch 5`（第1层正则提取URL写pages；第2层含密钥信号才送mmx）  |
+| 单独 JS 分析（两层）              | `python TOOLS/js_analyzer.py --target "{目标}" --batch 5`（第1层正则提取URL写pages；第2层含密钥信号才送etl_analyzer analyze_js）  |
 | DB 查询                          | `python TOOLS/db/db_query.py --target "{目标}" "SELECT ..."`                                                  |
 | 资产侦察                         | `python TOOLS/recon/fofa_relay.py`                                                                            |
 | 登录后恢复（写 auth_ready）      | `python TOOLS/db/db_query.py --target "{目标}" "UPDATE scan_state SET phase='auth_ready' WHERE id=1" --write` |
@@ -145,9 +145,9 @@ secondary 账号（IDOR 测试必需，有则注册）:
 - SQLite busy_timeout=5000，写失败等 1 秒重试
 - HTTP 请求走 Burp 代理（127.0.0.1:8080）
 
-## MiniMax 路由
+## ETL 分析路由
 
-遵循 `Skill(skill="mmx-router")` 的路由规则：何时必须把数据交给 mmx 处理、用哪些 prompt 模板。
+遵循 `Skill(skill="mmx-router")` 的路由规则：何时必须用 `etl_analyzer.py` 处理数据、用哪个 task。
 
 ## 10 轮记忆总结
 
