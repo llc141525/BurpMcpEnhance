@@ -322,43 +322,33 @@ fun Server.registerTools(
         "Editor text has been set"
     }
 
-    mcpTool<AddAutoApproveTarget>(
-        "Adds a hostname or hostname:port to the auto-approve list. Future HTTP requests to this target " +
-        "will be automatically approved without user interaction. Supports wildcard patterns like *.example.com."
+    mcpTool<ManageAutoApproveTargets>(
+        "Manages the HTTP request auto-approve list. Future requests to approved targets skip user confirmation. " +
+        "action: 'add' (target required, e.g. 'example.com' or '*.example.com:8080'), " +
+        "'remove' (target required), 'list' (no target needed), 'clear' (no target needed)."
     ) {
-        if (config.addAutoApproveTarget(target)) {
-            "Target added to auto-approve list: $target"
-        } else {
-            "Failed to add target. It may be invalid or already in the list."
+        when (action.lowercase()) {
+            "add" -> {
+                val t = target ?: return@mcpTool "target is required for 'add' action"
+                if (config.addAutoApproveTarget(t)) "Target added to auto-approve list: $t"
+                else "Failed to add target (invalid or already in list): $t"
+            }
+            "remove" -> {
+                val t = target ?: return@mcpTool "target is required for 'remove' action"
+                if (config.removeAutoApproveTarget(t)) "Target removed from auto-approve list: $t"
+                else "Target not found in auto-approve list: $t"
+            }
+            "list" -> {
+                val targets = config.getAutoApproveTargetsList()
+                if (targets.isEmpty()) "No auto-approve targets configured"
+                else targets.joinToString("\n") { "- $it" }
+            }
+            "clear" -> {
+                config.clearAutoApproveTargets()
+                "All auto-approve targets have been cleared"
+            }
+            else -> "Invalid action: $action. Use 'add', 'remove', 'list', or 'clear'."
         }
-    }
-
-    mcpTool<RemoveAutoApproveTarget>(
-        "Removes a hostname or hostname:port from the auto-approve list."
-    ) {
-        if (config.removeAutoApproveTarget(target)) {
-            "Target removed from auto-approve list: $target"
-        } else {
-            "Target not found in auto-approve list: $target"
-        }
-    }
-
-    mcpTool<ListAutoApproveTargets>(
-        "Lists all hostnames and hostname:port entries currently in the auto-approve list."
-    ) {
-        val targets = config.getAutoApproveTargetsList()
-        if (targets.isEmpty()) {
-            "No auto-approve targets configured"
-        } else {
-            targets.joinToString("\n") { "- $it" }
-        }
-    }
-
-    mcpTool<ClearAutoApproveTargets>(
-        "Removes all entries from the auto-approve list."
-    ) {
-        config.clearAutoApproveTargets()
-        "All auto-approve targets have been cleared"
     }
 }
 
@@ -479,13 +469,7 @@ data class GetCollaboratorInteractions(
 )
 
 @Serializable
-data class AddAutoApproveTarget(val target: String)
-
-@Serializable
-data class RemoveAutoApproveTarget(val target: String)
-
-@Serializable
-data class ListAutoApproveTargets(val dummy: Boolean = true)
-
-@Serializable
-data class ClearAutoApproveTargets(val dummy: Boolean = true)
+data class ManageAutoApproveTargets(
+    val action: String,
+    val target: String? = null
+)

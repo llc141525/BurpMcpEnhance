@@ -613,58 +613,55 @@ class ToolsKtTest {
     @Nested
     inner class AutoApproveTargetsToolsTests {
         @Test
-        fun `auto_approve target tools should be registered`() {
+        fun `manage_auto_approve_targets should be registered, old names should not`() {
             runBlocking {
                 val tools = client.listTools()
-                val toolNames = tools.map { it.name }
-                assertTrue(toolNames.contains("add_auto_approve_target"))
-                assertTrue(toolNames.contains("remove_auto_approve_target"))
-                assertTrue(toolNames.contains("list_auto_approve_targets"))
-                assertTrue(toolNames.contains("clear_auto_approve_targets"))
+                val names = tools.map { it.name }
+                assertTrue(names.contains("manage_auto_approve_targets"))
+                assertFalse(names.contains("add_auto_approve_target"))
+                assertFalse(names.contains("remove_auto_approve_target"))
+                assertFalse(names.contains("list_auto_approve_targets"))
+                assertFalse(names.contains("clear_auto_approve_targets"))
             }
         }
 
         @Test
-        fun `add auto approve target should succeed with valid target`() {
+        fun `add action should succeed with valid target`() {
             runBlocking {
                 val result = client.callTool(
-                    "add_auto_approve_target", mapOf("target" to "example.com")
+                    "manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com")
                 )
-                val text = result.expectTextContent()
-                assertEquals("Target added to auto-approve list: example.com", text)
+                result.expectTextContent("Target added to auto-approve list: example.com")
             }
         }
 
         @Test
-        fun `add auto approve target should fail with invalid target`() {
+        fun `add action should fail with invalid target`() {
             runBlocking {
                 val result = client.callTool(
-                    "add_auto_approve_target", mapOf("target" to "")
+                    "manage_auto_approve_targets", mapOf("action" to "add", "target" to "")
                 )
-                val text = result.expectTextContent()
-                assertTrue(text.contains("Failed to add target"))
+                assertTrue(result.expectTextContent().contains("Failed to add target"))
             }
         }
 
         @Test
-        fun `add duplicate target should fail`() {
+        fun `add action should fail with duplicate target`() {
             runBlocking {
-                client.callTool("add_auto_approve_target", mapOf("target" to "example.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com"))
                 val result = client.callTool(
-                    "add_auto_approve_target", mapOf("target" to "example.com")
+                    "manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com")
                 )
-                val text = result.expectTextContent()
-                assertTrue(text.contains("Failed to add target"))
+                assertTrue(result.expectTextContent().contains("Failed to add target"))
             }
         }
 
         @Test
-        fun `list auto approve targets should return configured targets`() {
+        fun `list action should return configured targets`() {
             runBlocking {
-                client.callTool("add_auto_approve_target", mapOf("target" to "example.com"))
-                client.callTool("add_auto_approve_target", mapOf("target" to "localhost:8080"))
-
-                val result = client.callTool("list_auto_approve_targets", emptyMap())
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "localhost:8080"))
+                val result = client.callTool("manage_auto_approve_targets", mapOf("action" to "list"))
                 val text = result.expectTextContent()
                 assertTrue(text.contains("example.com"))
                 assertTrue(text.contains("localhost:8080"))
@@ -672,49 +669,63 @@ class ToolsKtTest {
         }
 
         @Test
-        fun `list auto approve targets should return empty message when none configured`() {
+        fun `list action should return empty message when none configured`() {
             config.clearAutoApproveTargets()
             runBlocking {
-                val result = client.callTool("list_auto_approve_targets", emptyMap())
-                val text = result.expectTextContent()
-                assertEquals("No auto-approve targets configured", text)
+                val result = client.callTool("manage_auto_approve_targets", mapOf("action" to "list"))
+                result.expectTextContent("No auto-approve targets configured")
             }
         }
 
         @Test
-        fun `remove auto approve target should succeed`() {
+        fun `remove action should succeed`() {
             runBlocking {
-                client.callTool("add_auto_approve_target", mapOf("target" to "example.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com"))
                 val result = client.callTool(
-                    "remove_auto_approve_target", mapOf("target" to "example.com")
+                    "manage_auto_approve_targets", mapOf("action" to "remove", "target" to "example.com")
                 )
-                val text = result.expectTextContent()
-                assertEquals("Target removed from auto-approve list: example.com", text)
+                result.expectTextContent("Target removed from auto-approve list: example.com")
             }
         }
 
         @Test
-        fun `remove non-existent target should fail`() {
+        fun `remove action should fail for non-existent target`() {
             runBlocking {
                 val result = client.callTool(
-                    "remove_auto_approve_target", mapOf("target" to "nonexistent.com")
+                    "manage_auto_approve_targets", mapOf("action" to "remove", "target" to "nonexistent.com")
                 )
-                val text = result.expectTextContent()
-                assertTrue(text.contains("Target not found in auto-approve list"))
+                assertTrue(result.expectTextContent().contains("Target not found"))
             }
         }
 
         @Test
-        fun `clear auto approve targets should remove all`() {
+        fun `clear action should remove all targets`() {
             runBlocking {
-                client.callTool("add_auto_approve_target", mapOf("target" to "example.com"))
-                client.callTool("add_auto_approve_target", mapOf("target" to "test.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "example.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "add", "target" to "test.com"))
+                client.callTool("manage_auto_approve_targets", mapOf("action" to "clear"))
+                val result = client.callTool("manage_auto_approve_targets", mapOf("action" to "list"))
+                result.expectTextContent("No auto-approve targets configured")
+            }
+        }
 
-                val clearResult = client.callTool("clear_auto_approve_targets", emptyMap())
-                clearResult.expectTextContent("All auto-approve targets have been cleared")
+        @Test
+        fun `unknown action should return error`() {
+            runBlocking {
+                val result = client.callTool(
+                    "manage_auto_approve_targets", mapOf("action" to "destroy")
+                )
+                assertTrue(result.expectTextContent().contains("Invalid action"))
+            }
+        }
 
-                val listResult = client.callTool("list_auto_approve_targets", emptyMap())
-                listResult.expectTextContent("No auto-approve targets configured")
+        @Test
+        fun `add action without target should return error`() {
+            runBlocking {
+                val result = client.callTool(
+                    "manage_auto_approve_targets", mapOf("action" to "add")
+                )
+                assertTrue(result.expectTextContent().contains("target is required"))
             }
         }
     }
