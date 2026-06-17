@@ -1563,6 +1563,135 @@ class ToolsKtTest {
     }
 
     @Nested
+    inner class GraphQLToolsTests {
+        private val fakeSchemaJson = """
+            {
+              "queryType": { "name": "Query" },
+              "mutationType": { "name": "Mutation" },
+              "types": [
+                {
+                  "name": "Query",
+                  "kind": "OBJECT",
+                  "description": null,
+                  "fields": [
+                    {
+                      "name": "user",
+                      "description": "Get a user by ID",
+                      "type": { "kind": "OBJECT", "name": "User", "ofType": null },
+                      "args": [
+                        { "name": "id", "type": { "kind": "NON_NULL", "name": null, "ofType": { "kind": "SCALAR", "name": "ID", "ofType": null } } }
+                      ]
+                    },
+                    {
+                      "name": "users",
+                      "description": null,
+                      "type": { "kind": "LIST", "name": null, "ofType": { "kind": "OBJECT", "name": "User", "ofType": null } },
+                      "args": []
+                    }
+                  ]
+                },
+                {
+                  "name": "User",
+                  "kind": "OBJECT",
+                  "description": "A user in the system",
+                  "fields": [
+                    {
+                      "name": "id",
+                      "description": null,
+                      "type": { "kind": "SCALAR", "name": "ID", "ofType": null },
+                      "args": []
+                    },
+                    {
+                      "name": "name",
+                      "description": null,
+                      "type": { "kind": "SCALAR", "name": "String", "ofType": null },
+                      "args": []
+                    }
+                  ]
+                },
+                { "name": "__Schema", "kind": "OBJECT", "description": null, "fields": null }
+              ]
+            }
+        """.trimIndent()
+
+        private val cacheKey = "api.example.com:443/graphql"
+
+        private fun seedCache() {
+            val schema = lenientJson.parseToJsonElement(fakeSchemaJson).jsonObject
+            GraphQLSchemaCache.store(cacheKey, schema)
+        }
+
+        @BeforeEach
+        fun setup() {
+            GraphQLSchemaCache.clear()
+            runBlocking {
+                if (!client.isConnected()) client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @AfterEach
+        fun cleanup() {
+            GraphQLSchemaCache.clear()
+        }
+
+        @Test
+        fun `graphql tools should be registered`() {
+            runBlocking {
+                val names = client.listTools().map { it.name }
+                assertTrue(names.contains("graphql_introspect"), "graphql_introspect missing")
+                assertTrue(names.contains("graphql_list_types"), "graphql_list_types missing")
+                assertTrue(names.contains("graphql_describe_type"), "graphql_describe_type missing")
+                assertTrue(names.contains("graphql_query"), "graphql_query missing")
+            }
+        }
+
+        @Test
+        fun `graphql schema cache stores and retrieves schema`() {
+            seedCache()
+            val retrieved = GraphQLSchemaCache.get(cacheKey)
+            assertNotNull(retrieved, "Schema should be cached")
+            assertTrue(GraphQLSchemaCache.keys().contains(cacheKey))
+        }
+
+        @Test
+        fun `graphql_list_types should return cached types`() {
+            seedCache()
+            runBlocking {
+                val result = client.callTool("graphql_list_types", mapOf("cacheKey" to cacheKey))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("User"), "Should list User type: $text")
+                assertTrue(text.contains("Query"), "Should list Query type: $text")
+            }
+        }
+
+        @Test
+        fun `graphql_describe_type should return field details`() {
+            seedCache()
+            runBlocking {
+                val result = client.callTool(
+                    "graphql_describe_type", mapOf("cacheKey" to cacheKey, "typeName" to "User")
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("id"), "Should show id field: $text")
+                assertTrue(text.contains("name"), "Should show name field: $text")
+            }
+        }
+
+        @Test
+        fun `graphql_list_types should error when schema not cached`() {
+            runBlocking {
+                val result = client.callTool(
+                    "graphql_list_types", mapOf("cacheKey" to "notcached.example.com:443/graphql")
+                )
+                delay(100)
+                assertTrue(result.expectTextContent().contains("not cached"))
+            }
+        }
+    }
+
+    @Nested
     inner class ScopeToolsTests {
         @BeforeEach
         fun setupScope() {

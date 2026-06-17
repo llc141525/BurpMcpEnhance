@@ -64,6 +64,7 @@ fun Server.registerTools(
         registerDiffTools(database)
     }
     registerScopeTools(api, config)
+    registerGraphQLTools(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {
