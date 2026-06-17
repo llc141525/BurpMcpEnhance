@@ -288,8 +288,8 @@ def handle_api_fuzz(target: str, db_path: Path, conn: sqlite3.Connection) -> Non
 
 
 def handle_vuln_scan(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
-    """phase=vuln_scan: SSRF候选 + 文件上传 + 存储型XSS 三项专项扫描。"""
-    print("[run_scan] phase=vuln_scan → 运行 ssrf_scan / upload_scan / xss_scan ...")
+    """phase=vuln_scan: SSRF候选 + 文件上传 + 存储型XSS + 竞态条件 四项专项扫描。"""
+    print("[run_scan] phase=vuln_scan → 运行 ssrf_scan / upload_scan / xss_scan / race_scan ...")
 
     def _count_sp(source: str) -> int:
         try:
@@ -303,11 +303,19 @@ def handle_vuln_scan(target: str, db_path: Path, conn: sqlite3.Connection) -> No
         except sqlite3.OperationalError:
             return 0
 
+    def _count_findings(ftype: str) -> int:
+        try:
+            return conn.execute("SELECT count(*) FROM findings WHERE type=?", (ftype,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
     before_ssrf = _count_hq("ssrf_candidate")
     before_upload = _count_sp("upload_scan")
     before_xss = _count_sp("xss_scan")
+    before_race_f = _count_findings("race_condition")
+    before_race_sp = _count_sp("race_scan")
 
-    for script in ("ssrf_scan.py", "upload_scan.py", "xss_scan.py"):
+    for script in ("ssrf_scan.py", "upload_scan.py", "xss_scan.py", "race_scan.py"):
         subprocess.run(  # noqa: S603
             [PYTHON, str(PIPELINE_DIR / script), "--target", target],
             timeout=600,
@@ -317,6 +325,8 @@ def handle_vuln_scan(target: str, db_path: Path, conn: sqlite3.Connection) -> No
     after_ssrf = _count_hq("ssrf_candidate")
     after_upload = _count_sp("upload_scan")
     after_xss = _count_sp("xss_scan")
+    after_race_f = _count_findings("race_condition")
+    after_race_sp = _count_sp("race_scan")
 
     set_phase(conn, "exploit")
     print_tag(
@@ -326,6 +336,8 @@ def handle_vuln_scan(target: str, db_path: Path, conn: sqlite3.Connection) -> No
             f"  SSRF 候选: {after_ssrf - before_ssrf} 条写入 hunt_queue",
             f"  文件上传: {after_upload - before_upload} 条写入 suspicious_points",
             f"  存储型XSS: {after_xss - before_xss} 条写入 suspicious_points",
+            f"  竞态漏洞: {after_race_f - before_race_f} 条写入 findings",
+            f"  竞态候选: {after_race_sp - before_race_sp} 条写入 suspicious_points",
         ],
     )
 

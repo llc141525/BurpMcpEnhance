@@ -32,12 +32,16 @@ python TOOLS/run_scan.py --target "{目标}"
 | 资产侦察                         | `python TOOLS/recon/fofa_relay.py`                                                                            |
 | 登录后恢复（写 auth_ready）      | `python TOOLS/db/db_query.py --target "{目标}" "UPDATE scan_state SET phase='auth_ready' WHERE id=1" --write` |
 | Chrome 启动（auth_explore 需要） | `python TOOLS/auth/chrome_manager.py --target "{目标}"`                                                       |
+| Burp 被动 URL 补充               | `mcp__burp__get_site_map(urlPrefix="{seed_url}", count=20, offset=0)` — 补入 pages 队列                      |
+| Burp 主动扫描（含扩展）          | `mcp__burp__start_active_scan(auditType="active", url="{url}")` — 触发 Param Miner + Retire.js 等已装扩展    |
+| Scope 验证                        | `mcp__burp__manage_scope(action="check", url="{url}")` — 扫描前确认在授权范围内                              |
 
 ## 前置检查
 
 ```bash
-# Burp 在线
+# Burp 在线 + scope 检查
 mcp__burp__list_proxy_http_history(count=1)
+mcp__burp__manage_scope(action="check", url="{seed_url}")  # 确认目标在授权 scope 内
 
 # 工具链
 httpx --version && nuclei --version && katana --version
@@ -61,7 +65,7 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `spider`       | BFS 爬取 + JS 两层分析    | `pipeline/bfs_crawl.py` + `js_analyzer.py` |
 | `probe`        | 参数 fuzz + nuclei 探测   | `pipeline/probe_runner.py`                   |
 | `api_fuzz`     | API 命名空间爆破：词列+模式推断探测隐藏 admin/teacher API → 写 `hunt_queue` | `pipeline/api_fuzz.py` |
-| `vuln_scan`    | SSRF候选发现 + 文件上传测试 + 存储型XSS beacon注入 → suspicious_points/hunt_queue | `ssrf_scan.py` + `upload_scan.py` + `xss_scan.py` | `exploit` |
+| `vuln_scan`    | SSRF候选发现 + 文件上传测试 + 存储型XSS beacon注入 + 竞态条件检测 → suspicious_points/hunt_queue/findings | `ssrf_scan.py` + `upload_scan.py` + `xss_scan.py` + `race_scan.py` | `exploit` |
 | `exploit`      | 框架专项 CVE 攻击链 + SQLi 扫描 | `pipeline/framework_exploit.py` + `pipeline/sqli_scan.py` |
 | `brute`        | 目录爆破                  | `pipeline/brutescan.py`                      |
 | `auth_timeout` | 登录超时，等待操作员重试  | —                                             |
@@ -83,6 +87,7 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `[SSRF_SCAN]`             | `candidates={n} probed={m} found={k}` — SSRF 候选探测摘要 | 读摘要 → found>0 则按 OOB 验证流程确认；再次调用 `run_scan.py` |
 | `[UPLOAD_SCAN]`           | `targets={n} tested={m} found={k}` — 文件上传利用摘要 | 读摘要 → found>0 则转 vuln-review 验证；再次调用 `run_scan.py` |
 | `[XSS_SCAN]`              | `targets={n} tested={m} found_stored={k} found_reflected={j}` — XSS 检测摘要 | 读摘要 → found_stored>0 优先转 vuln-review；再次调用 `run_scan.py` |
+| `[RACE_SCAN]`             | `candidates={n} findings={k} sp={j}` — 竞态条件检测摘要 | 读摘要 → findings>0 立即通知操作员（可能高危）；再次调用 `run_scan.py` |
 
 ### [NEW_SUSPICIOUS_POINTS] 处理细则
 
@@ -90,6 +95,31 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 
 - `risk=High/Critical` 且 `test_type` 含 `idor/auth/sqli` → 立即通知操作员并转 vuln-review
 - 其余 → 记录后再次调用 `run_scan.py` 继续
+
+### spider 阶段：Burp 被动 URL 补充
+
+每轮 BFS 结束后，用 Burp site map 补充爬虫未主动访问到的 URL（JS 动态加载、redirect、iframe 等）：
+
+```python
+# 拉取 Burp 被动发现的 URL，写入 pages 队列
+for entry in mcp__burp__get_site_map(urlPrefix=seed_url, count=20, offset=0):
+    # entry: {method, url, statusCode}
+    INSERT OR IGNORE INTO pages (url, status, source) VALUES (entry.url, 'queued', 'burp_sitemap')
+```
+
+### probe 阶段：Burp 主动扫描（Param Miner + Retire.js）
+
+`probe_runner.py` 完成后，对 seed_url 触发一次 Burp 主动扫描，自动运行已装扩展：
+
+```python
+# 先加入 scope
+mcp__burp__manage_scope(action="add", url=seed_url)
+# 触发扫描（Param Miner、Retire.js 等扩展自动运行）
+mcp__burp__start_active_scan(auditType="active", url=seed_url)
+# 结果通过 list_scanner_issues / get_scanner_issues 读取，写入 suspicious_points
+```
+
+Retire.js 命中（vulnerable_js_library）可直接写 findings（CVE 编号即为证据）。
 
 ### vuln_scan 阶段后：Collaborator OOB SSRF 验证
 
