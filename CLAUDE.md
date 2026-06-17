@@ -59,12 +59,47 @@
 
 | 工具                    | 用途                                                               | 适用场景                                                                                      |
 | ----------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Burp Suite              | `list_proxy_http_history` + `get_proxy_http_detail`            | 流量分析+参数篡改+漏洞验证。**结果不直接读，喂 etl_analyzer.py 过滤**                    |
+| Burp Suite              | 见下方"Burp MCP 工具速查"                                     | 流量分析+参数篡改+漏洞验证+主动扫描+Collaborator OOB+GraphQL探测 |
 | Scrapling (Python lib)  | 爬虫引擎: Fetcher/StealthyFetcher                                  | **爬虫主力**: 页面抓取、链接/表单/API 提取                                              |
 | Chrome DevTools         | 浏览器调试、JS 执行、网络监控                                      | **仅限登录流程**: 手动登录、验证码、会话恢复                                            |
 | SQLite (Python sqlite3) | 查询 dbs/{目标}_{日期}.db                                          | 扫描结果分析（**不再使用 mcp\_\_sqlite\_\_\* 工具**）                                   |
 | LSP                     | goToDefinition / findReferences / documentSymbol / hover           | **JS 逆向主力**: 大文件导航、调用链追踪、结构分析                                       |
 | Stealth Browser         | 反检测浏览器 + 验证码识别                                          | **仅限登录流程**: 替代 Chrome DevTools 场景的浏览器操作                                 |
+
+### Burp MCP 工具速查
+
+#### 插件感知（重要）
+
+**A 类插件（HTTP Handler）— 对所有 `send_http1_request` 调用自动生效**（无需任何操作）：
+- Bypass WAF · Knife · 403 Bypasser · autoDecoder · captcha-killer · Content Type Converter
+
+**B 类插件（Scanner Extension）— 调用 `start_active_scan` 时自动运行**：
+- Active Scan++ · Param Miner · HTTP Request Smuggler · FastjsonScan · ShiroScan · Struts RCE · Retirejs
+
+> 调用 `get_burp_info` 可查看当前 Burp 版本、版本类型及能力总结。
+
+#### 工具分类
+
+| 工具 | 用途 | 注意 |
+|------|------|------|
+| `get_burp_info` | Burp 版本/能力总览 | 会话开始时调用一次 |
+| `list_proxy_http_history` | DB 缓存历史（轻量，推荐）| 结果喂 etl_analyzer |
+| `get_proxy_http_detail` | 按 ID 取完整请求/响应 | 用 list 先拿 ID |
+| `get_proxy_http_history` | 实时 Burp 历史，可选 regex 过滤 | 返回 JSON，量大 |
+| `diff_proxy_responses` | 对比两条响应的差异行 | 省 Token，漏洞确认首选 |
+| `manage_scope` | 添加/删除/检查目标 Scope | 测试前必须确认 in-scope |
+| `get_site_map` | 读取 Burp 已发现的 URL | 可按 URL 前缀过滤 |
+| `start_active_scan` | 触发主动扫描（Pro 专属）| B 类插件自动运行 |
+| `get_scanner_issues` | 读取 Burp 扫描结果（实时）| Pro 专属 |
+| `list_scanner_issues` | 读取 DB 缓存的扫描结果 | 更轻量，推荐 |
+| `generate_collaborator_payload` | 生成 Collaborator OOB payload | Pro 专属 |
+| `get_collaborator_interactions` | 查询 OOB 回调（DNS/HTTP/SMTP）| Pro 专属 |
+| `graphql_introspect` | 获取并缓存 GraphQL schema | 每个目标调一次即可 |
+| `graphql_list_types` | 列出缓存 schema 中的所有类型 | 需先调 introspect |
+| `graphql_describe_type` | 查看某类型的所有字段和参数 | 需先调 introspect |
+| `graphql_query` | 执行任意 GraphQL 查询 | 用于测试发现的操作 |
+| `send_http1_request` | 发送 HTTP/1.1 请求 | A 类插件自动处理 |
+| `manage_auto_approve_targets` | 管理请求自动审批列表 | action: add/remove/list/clear |
 
 ### 工具脚本
 
@@ -99,6 +134,33 @@
 | `utils/waf_rotate.py`         | WAF 绕过/IP 轮换                                                                                                                                                                   |
 | `utils/clash-helper.ps1`      | Clash 代理切换                                                                                                                                                                     |
 | `tests/`                      | 单元测试（92 个，`uv run pytest TOOLS/tests/`）                                                                                                                                  |
+
+### Collaborator OOB SSRF 工作流
+
+Python 子进程没有 MCP 访问权限，所以 ssrf_scan.py 无法自己调用 generate_collaborator_payload。正确分工：
+
+**AI 负责 orchestrate，ssrf_scan.py 只接收参数：**
+
+```
+1. AI 调用: generate_collaborator_payload
+   → 得到 payload="abc123.burpcollaborator.net", payloadId="abc123"
+
+2. AI 传参运行扫描:
+   uv run python TOOLS/pipeline/ssrf_scan.py --target "目标名" \
+     --collaborator-url "http://abc123.burpcollaborator.net/" \
+     --collaborator-payload-id "abc123"
+
+3. 等待脚本完成（OOB 回调需时间传播，建议等 10-30 秒后再查）
+
+4. AI 调用: get_collaborator_interactions(payloadId="abc123")
+   → 有 DNS/HTTP 回调 = 盲 SSRF 确认
+```
+
+**无 Collaborator 时（仅检测反射型 SSRF）：**
+
+```bash
+uv run python TOOLS/pipeline/ssrf_scan.py --target "目标名"
+```
 
 ### ETL 分析策略 (etl_analyzer.py)
 
@@ -263,9 +325,34 @@ Claude 不读原始噪音数据。以下场景**必须**先经 `etl_analyzer.py`
 
 ### Burp 查询规则
 
-- **优先用 `list_proxy_http_history`**（返回精简字段），不用 `get_proxy_http_history_regex`（返回全量字段）
+- **优先用 `list_proxy_http_history`**（返回精简字段）
+- 需要实时过滤时用 `get_proxy_http_history`，可选传 `regex` 参数（原 `get_proxy_http_history_regex` 已合并入此工具）
+- 响应对比确认漏洞时用 `diff_proxy_responses`，只返回差异行，省 Token
 - 结果直接喂 etl_analyzer（task=filter_burp）过滤，Claude 不读原始 JSON
 - 精确定位需求: `list_proxy_http_history(count=5, offset=N)` — 控制在 5 条以内
+
+### GraphQL 目标探测工作流
+
+GraphQL 接口（常见于 `/graphql`, `/api/graphql`, `/v1/graphql`）：
+
+```
+1. AI 调用: graphql_introspect(targetHostname=..., targetPort=443, usesHttps=True, path="/graphql")
+   → 返回 schema 摘要（queries/mutations/types），schema 自动缓存
+
+2. AI 调用: graphql_list_types(cacheKey="host:443/graphql")
+   → 查看所有类型，识别敏感实体（User, Admin, Order, File...）
+
+3. AI 调用: graphql_describe_type(cacheKey="...", typeName="User")
+   → 查看字段定义，发现隐藏字段（password, role, token...）
+
+4. AI 调用: graphql_query(query="{ user(id:1) { id name email role } }", ...)
+   → 验证 IDOR / 越权 / 信息泄露
+```
+
+**注意事项：**
+- schema 缓存在 Burp 进程内存中，重启 Burp 后需重新 introspect
+- 遇到需要 Authorization 的 GraphQL，先用 `manage_scope` + `send_http1_request` 发带 token 的请求
+- 发现 mutation 中有 `createAdmin` / `resetPassword` / `assignRole` 等立即升级给操作员
 
 ### JS 逆向时的 LSP 导航
 
