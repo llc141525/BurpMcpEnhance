@@ -68,11 +68,24 @@ This:     AI query -> SQLite cache -> instant
 - `read_file` / `delete_file` -- manage large response files
 - Task types: send HTTP request, create Repeater tab, send to Intruder
 
+**Target Scope & Scanning**
+- `manage_scope` -- add/remove/check Burp target scope
+- `get_site_map` -- list URLs discovered by Burp (filter by prefix)
+- `start_active_scan` -- trigger active audit (Pro only; scanner extensions run automatically)
+- `diff_proxy_responses` -- line-level diff of two responses by ID, token-efficient
+
+**GraphQL Recon**
+- `graphql_introspect` -- fetch and cache a GraphQL schema
+- `graphql_list_types` -- list all types in the cached schema
+- `graphql_describe_type` -- show fields and args for one type
+- `graphql_query` -- execute arbitrary queries against the target
+
 **Better UX**
-- Real-time status dashboard -- server, exporter, queue, database at a glance
+- `get_burp_info` -- edition, version, and categorized tool list at a glance
+- Real-time status dashboard -- server, exporter, queue, database
 - Chinese UI -- all UI text in Chinese
 - Restart button -- no need to reload the extension
-- Auto-Approve management -- 4 tools to add/remove/list/clear auto-approve targets
+- `manage_auto_approve_targets` -- single merged tool to add/remove/list/clear auto-approve targets
 
 ## Quick Start
 
@@ -169,39 +182,64 @@ Uses the bundled `mcp-proxy-all.jar` as a stdio-SSE bridge. Requires Java 21:
 
 ## MCP Tools
 
-### Core Tools
-- `send_http1_request` -- Send HTTP/1.1 request
-- `get_proxy_http_history` -- Get proxy HTTP history
-- `get_websocket_history` -- Get WebSocket history
+### Info
+- `get_burp_info` -- Edition, version, and full tool inventory
+
+### HTTP
+- `send_http1_request` -- Send HTTP/1.1 request (A-class plugins apply automatically)
+- `send_http2_request` -- Send HTTP/2 request
 - `create_repeater_tab` -- Create Repeater tab
 - `send_to_intruder` -- Send to Intruder
-- `set_editor_text` -- Set editor content
-- `set_selection` -- Set selected text
-- `get_collaborator_payloads` -- Generate Collaborator payloads
-- `get_collaborator_interactions` -- Query Collaborator interactions
 
-### Data Query (cached)
+### Proxy History
+- `get_proxy_http_history` -- Live proxy history; optional `regex` param for filtering
+- `get_proxy_websocket_history` -- WebSocket history; optional `regex` param
+
+### Scope & Scanning
+- `manage_scope` -- Add / remove / check URLs in Burp target scope
+- `get_site_map` -- URLs discovered by Burp, filterable by prefix
+- `start_active_scan` -- Trigger active audit; B-class scanner extensions run automatically *(Pro only)*
+
+### Diff
+- `diff_proxy_responses` -- Line-level diff of two responses by history ID; token-efficient
+
+### GraphQL Recon
+- `graphql_introspect` -- Fetch & cache a GraphQL schema via introspection
+- `graphql_list_types` -- List all types in a cached schema
+- `graphql_describe_type` -- Show fields and arguments for a specific type
+- `graphql_query` -- Execute arbitrary GraphQL queries or mutations
+
+### Cached Data (SQLite)
 - `list_proxy_http_history` -- Paginated HTTP records from local cache
-- `get_proxy_http_detail` -- Full request/response detail
-- `list_scanner_issues` -- Scanner issue summary
+- `get_proxy_http_detail` -- Full request/response by ID
+- `list_scanner_issues` -- Scanner issue summary from cache
 - `get_scanner_issue_detail` -- Full scanner issue detail
 - `exporter_stats` -- Cache status
 
+### Pro Only (Burp Suite Professional)
+- `get_scanner_issues` -- Live scanner results from Burp API
+- `generate_collaborator_payload` -- Generate a Burp Collaborator OOB payload
+- `get_collaborator_interactions` -- Query DNS/HTTP/SMTP callbacks for a payload
+
 ### Async Tasks
-- `submit_task` -- Submit background task
+- `submit_task` -- Submit background task, get ID immediately
 - `get_task_result` -- Poll task result
 
 ### File Management
-- `read_file` -- Read temp file
+- `read_file` -- Read temp file (large response chunks)
 - `delete_file` -- Delete temp file
 
-### Auto-Approve Management
-- `add_auto_approve_target` -- Add auto-approve target
-- `remove_auto_approve_target` -- Remove auto-approve target
-- `list_auto_approve_targets` -- List all auto-approve targets
-- `clear_auto_approve_targets` -- Clear all auto-approve targets
+### Utilities
+- `url_encode` / `url_decode` -- URL encoding
+- `base64_encode` / `base64_decode` -- Base64 encoding
+- `generate_random_string` -- Random string generation
+- `get_active_editor_contents` -- Read the active Burp editor
+- `set_active_editor_contents` -- Write to the active Burp editor
 
-### Database
+### Configuration
+- `manage_auto_approve_targets` -- Add / remove / list / clear auto-approve targets (`action` param)
+- `set_task_execution_engine_state` -- Pause or resume Burp's task engine
+- `set_proxy_intercept_state` -- Enable or disable proxy intercept
 - `clear_database` -- Clear cache (all / HTTP / scanner)
 
 ## Architecture
@@ -318,11 +356,24 @@ mcpTool<MyToolArgs>("tool description") {
 - `read_file` / `delete_file` -- 管理大文件
 - 支持 HTTP 请求、创建 Repeater、发送到 Intruder
 
+**目标范围与扫描**
+- `manage_scope` -- 添加/删除/检查 Burp 目标范围
+- `get_site_map` -- 列出 Burp 发现的 URL（可按前缀过滤）
+- `start_active_scan` -- 触发主动扫描（Pro 专属；扫描器扩展自动运行）
+- `diff_proxy_responses` -- 按 ID 对比两条响应差异行，省 Token
+
+**GraphQL 侦察**
+- `graphql_introspect` -- 获取并缓存 GraphQL schema
+- `graphql_list_types` -- 列出缓存 schema 中的所有类型
+- `graphql_describe_type` -- 查看指定类型的字段和参数
+- `graphql_query` -- 执行任意 GraphQL 查询
+
 **更好的 UI**
+- `get_burp_info` -- 版本、版本类型与工具清单一览
 - 实时状态仪表板 -- 服务器、导出器、队列、数据库一目了然
 - 全中文界面
 - 重启按钮 -- 不需要重载扩展
-- Auto-Approve 管理 -- 4 个工具管理自动放行列表
+- `manage_auto_approve_targets` -- 单一合并工具管理自动放行列表（add/remove/list/clear）
 
 ## 快速开始
 
@@ -419,39 +470,64 @@ cd burp-mcp-enhance
 
 ## MCP 工具清单
 
-### 核心工具
-- `send_http1_request` -- 发送 HTTP/1.1 请求
-- `get_proxy_http_history` -- 获取代理 HTTP 历史
-- `get_websocket_history` -- 获取 WebSocket 历史
+### 基础信息
+- `get_burp_info` -- 版本类型、版本号与全量工具分类一览
+
+### HTTP
+- `send_http1_request` -- 发送 HTTP/1.1 请求（A 类插件自动生效）
+- `send_http2_request` -- 发送 HTTP/2 请求
 - `create_repeater_tab` -- 创建 Repeater 标签
 - `send_to_intruder` -- 发送到 Intruder
-- `set_editor_text` -- 设置编辑器内容
-- `set_selection` -- 设置选中文本
-- `get_collaborator_payloads` -- 生成 Collaborator 负载
-- `get_collaborator_interactions` -- 查询 Collaborator 交互
 
-### 数据查询工具（需缓存）
+### 代理历史
+- `get_proxy_http_history` -- 实时代理 HTTP 历史，可选 `regex` 过滤参数
+- `get_proxy_websocket_history` -- WebSocket 历史，可选 `regex` 过滤参数
+
+### 范围与扫描
+- `manage_scope` -- 添加/删除/检查目标范围
+- `get_site_map` -- 列出 Burp 已发现的 URL，可按前缀过滤
+- `start_active_scan` -- 触发主动扫描；B 类扫描器扩展自动运行 *(Pro 专属)*
+
+### 差异对比
+- `diff_proxy_responses` -- 按历史 ID 对比两条响应的差异行，省 Token
+
+### GraphQL 侦察
+- `graphql_introspect` -- 发送 introspection 并缓存 schema
+- `graphql_list_types` -- 列出缓存 schema 中所有类型
+- `graphql_describe_type` -- 查看指定类型的字段与参数
+- `graphql_query` -- 执行任意 GraphQL 查询或 mutation
+
+### 缓存数据查询（SQLite）
 - `list_proxy_http_history` -- 从本地缓存分页列出 HTTP 记录
-- `get_proxy_http_detail` -- 获取完整请求/响应详情
-- `list_scanner_issues` -- 列出扫描问题摘要
+- `get_proxy_http_detail` -- 按 ID 获取完整请求/响应
+- `list_scanner_issues` -- 列出缓存中的扫描问题摘要
 - `get_scanner_issue_detail` -- 获取扫描问题完整详情
 - `exporter_stats` -- 查看缓存状态
 
-### 异步任务工具
-- `submit_task` -- 提交后台任务
+### Pro 专属（Burp Suite Professional）
+- `get_scanner_issues` -- 实时扫描结果
+- `generate_collaborator_payload` -- 生成 Burp Collaborator OOB payload
+- `get_collaborator_interactions` -- 查询 DNS/HTTP/SMTP 回调
+
+### 异步任务
+- `submit_task` -- 提交后台任务，立即返回 ID
 - `get_task_result` -- 查询任务结果
 
-### 文件管理工具
-- `read_file` -- 读取临时文件
+### 文件管理
+- `read_file` -- 读取临时文件（大响应分块读取）
 - `delete_file` -- 删除临时文件
 
-### Auto-Approve 管理工具
-- `add_auto_approve_target` -- 添加自动放行目标
-- `remove_auto_approve_target` -- 移除自动放行目标
-- `list_auto_approve_targets` -- 列出所有自动放行目标
-- `clear_auto_approve_targets` -- 清除所有自动放行目标
+### 实用工具
+- `url_encode` / `url_decode` -- URL 编解码
+- `base64_encode` / `base64_decode` -- Base64 编解码
+- `generate_random_string` -- 随机字符串生成
+- `get_active_editor_contents` -- 读取当前 Burp 编辑器内容
+- `set_active_editor_contents` -- 写入当前 Burp 编辑器内容
 
-### 数据库管理工具
+### 配置管理
+- `manage_auto_approve_targets` -- 管理自动放行列表（action: add/remove/list/clear）
+- `set_task_execution_engine_state` -- 暂停/恢复 Burp 任务引擎
+- `set_proxy_intercept_state` -- 启用/禁用代理拦截
 - `clear_database` -- 清除缓存（全部/HTTP 历史/扫描问题）
 
 ## 架构说明
