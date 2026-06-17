@@ -20,6 +20,24 @@ from db.db_utils import find_db  # noqa: E402
 
 TOKEN_NAME_RE = ("token", "auth", "jwt", "bearer", "csrf", "xsrf", "api_key", "apikey", "secret")
 
+AUTH_STORAGE_TOKENS_DDL = """
+CREATE TABLE IF NOT EXISTS auth_storage_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT DEFAULT 'primary',
+    storage_type TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    token_name TEXT NOT NULL,
+    token_value TEXT NOT NULL,
+    token_kind TEXT DEFAULT 'storage',
+    is_active INTEGER DEFAULT 1,
+    first_seen_at TEXT DEFAULT (datetime('now','localtime')),
+    last_seen_at TEXT DEFAULT (datetime('now','localtime')),
+    expires_at TEXT,
+    source TEXT DEFAULT 'cdp_capture',
+    UNIQUE(role, storage_type, origin, token_name)
+);
+"""
+
 
 def _from_unix_ts(ts: Any) -> str | None:
     if not ts or ts <= 0:
@@ -102,7 +120,7 @@ def storage_items_to_tokens(
     return tokens
 
 
-def cookies_to_auth_session_rows(cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def cookies_to_auth_session_rows(cookies: list[dict[str, Any]], role: str = "primary") -> list[dict[str, Any]]:
     """Normalize Playwright cookies into auth_sessions-compatible rows."""
     rows = []
     for cookie in cookies:
@@ -114,6 +132,7 @@ def cookies_to_auth_session_rows(cookies: list[dict[str, Any]]) -> list[dict[str
                 "path": cookie.get("path", "/"),
                 "expires_at": _from_unix_ts(cookie.get("expires")),
                 "cookie_source": "cdp_capture",
+                "role": role,
             }
         )
     return rows
@@ -121,6 +140,7 @@ def cookies_to_auth_session_rows(cookies: list[dict[str, Any]]) -> list[dict[str
 
 def upsert_storage_tokens(conn: sqlite3.Connection, tokens: list[dict[str, Any]]) -> int:
     """Upsert storage-backed tokens into auth_storage_tokens."""
+    ensure_auth_storage_tokens_table(conn)
     count = 0
     for token in tokens:
         cur = conn.execute(
@@ -148,29 +168,49 @@ def upsert_storage_tokens(conn: sqlite3.Connection, tokens: list[dict[str, Any]]
     return count
 
 
+def ensure_auth_storage_tokens_table(conn: sqlite3.Connection) -> None:
+    """Create auth_storage_tokens when an older DB has not run migration 014 yet."""
+    conn.executescript(AUTH_STORAGE_TOKENS_DDL)
+    conn.commit()
+
+
 def upsert_auth_session_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     count = 0
     for row in rows:
-        cur = conn.execute(
-            """INSERT INTO auth_sessions
-               (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source)
-               VALUES ('cookie', ?, ?, ?, ?, ?, 1, ?)
-               ON CONFLICT(token_name, domain) DO UPDATE SET
-                 token_value=excluded.token_value,
-                 path=excluded.path,
-                 expires_at=excluded.expires_at,
-                 is_active=1,
-                 cookie_source=excluded.cookie_source,
-                 last_checked_at=datetime('now','localtime')""",
-            (
-                row["token_name"],
-                row["token_value"],
-                row["domain"],
-                row.get("path", "/"),
-                row.get("expires_at"),
-                row.get("cookie_source", "cdp_capture"),
-            ),
-        )
+        existing = conn.execute(
+            "SELECT id FROM auth_sessions WHERE COALESCE(role, 'primary')=? AND token_name=? AND domain=? LIMIT 1",
+            (row.get("role", "primary"), row["token_name"], row["domain"]),
+        ).fetchone()
+        if existing:
+            cur = conn.execute(
+                """UPDATE auth_sessions
+                   SET token_value=?, path=?, expires_at=?, is_active=1,
+                       cookie_source=?, role=?, last_checked_at=datetime('now','localtime')
+                   WHERE id=?""",
+                (
+                    row["token_value"],
+                    row.get("path", "/"),
+                    row.get("expires_at"),
+                    row.get("cookie_source", "cdp_capture"),
+                    row.get("role", "primary"),
+                    existing["id"],
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """INSERT INTO auth_sessions
+                   (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source, role)
+                   VALUES ('cookie', ?, ?, ?, ?, ?, 1, ?, ?)""",
+                (
+                    row["token_name"],
+                    row["token_value"],
+                    row["domain"],
+                    row.get("path", "/"),
+                    row.get("expires_at"),
+                    row.get("cookie_source", "cdp_capture"),
+                    row.get("role", "primary"),
+                ),
+            )
         count += cur.rowcount
     conn.commit()
     return count
@@ -225,7 +265,13 @@ async def _capture_browser_state(cdp_url: str, seed_url: str) -> tuple[list[dict
     return cookies, storage_tokens
 
 
-def capture_to_db(target: str, db_path: str | Path, cdp_url: str | None = None, seed_url: str | None = None) -> dict:
+def capture_to_db(
+    target: str,
+    db_path: str | Path,
+    cdp_url: str | None = None,
+    seed_url: str | None = None,
+    role: str = "primary",
+) -> dict:
     """Capture cookies and storage tokens from CDP and persist them."""
     import asyncio
 
@@ -243,7 +289,9 @@ def capture_to_db(target: str, db_path: str | Path, cdp_url: str | None = None, 
             raise ValueError(f"missing seed_url for {target}")
 
         cookies, storage_tokens = asyncio.run(_capture_browser_state(cdp, seed))
-        cookie_rows = cookies_to_auth_session_rows(cookies)
+        cookie_rows = cookies_to_auth_session_rows(cookies, role=role)
+        for token in storage_tokens:
+            token["role"] = role
         cookie_count = upsert_auth_session_rows(conn, cookie_rows)
         token_count = upsert_storage_tokens(conn, storage_tokens)
         return {"cookies": cookie_count, "storage_tokens": token_count}
@@ -251,15 +299,20 @@ def capture_to_db(target: str, db_path: str | Path, cdp_url: str | None = None, 
         conn.close()
 
 
-def export_header(target: str, url: str) -> dict[str, str]:
+def export_header(target: str, url: str, role: str = "primary") -> dict[str, str]:
     db_path = find_db(target)
     if not db_path:
         raise FileNotFoundError(target)
-    host = urlparse(url).netloc
+    parsed_url = urlparse(url)
+    host = parsed_url.hostname or parsed_url.netloc.split(":")[0]
     conn = _connect(db_path)
     try:
+        ensure_auth_storage_tokens_table(conn)
         cookies = conn.execute(
-            "SELECT token_name, token_value, domain FROM auth_sessions WHERE is_active=1 AND token_type='cookie'"
+            """SELECT token_name, token_value, domain
+               FROM auth_sessions
+               WHERE is_active=1 AND token_type='cookie' AND COALESCE(role, 'primary')=?""",
+            (role,),
         ).fetchall()
         parts = [
             f"{row['token_name']}={row['token_value']}"
@@ -270,7 +323,9 @@ def export_header(target: str, url: str) -> dict[str, str]:
         bearer = conn.execute(
             """SELECT token_value FROM auth_storage_tokens
                WHERE is_active=1 AND token_kind IN ('bearer','jwt')
-               ORDER BY last_seen_at DESC LIMIT 1"""
+                 AND COALESCE(role, 'primary')=?
+               ORDER BY last_seen_at DESC LIMIT 1""",
+            (role,),
         ).fetchone()
         if bearer:
             value = bearer["token_value"]
@@ -287,19 +342,21 @@ def main() -> None:
     capture.add_argument("--target", required=True)
     capture.add_argument("--cdp-url", default=None)
     capture.add_argument("--seed-url", default=None)
+    capture.add_argument("--role", default="primary", choices=["primary", "secondary"])
     export = sub.add_parser("export-header")
     export.add_argument("--target", required=True)
     export.add_argument("--url", required=True)
+    export.add_argument("--role", default="primary", choices=["primary", "secondary"])
     args = parser.parse_args()
 
     if args.cmd == "capture":
         db_path = find_db(args.target)
         if not db_path:
             sys.exit(f"[auth_state] 未找到目标 DB: {args.target}")
-        counts = capture_to_db(args.target, db_path, args.cdp_url, args.seed_url)
+        counts = capture_to_db(args.target, db_path, args.cdp_url, args.seed_url, role=args.role)
         print(json.dumps(counts, ensure_ascii=False))
     elif args.cmd == "export-header":
-        print(json.dumps(export_header(args.target, args.url), ensure_ascii=False))
+        print(json.dumps(export_header(args.target, args.url, role=args.role), ensure_ascii=False))
 
 
 if __name__ == "__main__":

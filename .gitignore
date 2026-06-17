@@ -13,3 +13,9 @@ dbs/
 .session-log.jsonl
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
+
+# 扫描产物 / 敏感数据
+*.har
+brute_results.json
+tempCodeRunnerFile.python
+台州学院/

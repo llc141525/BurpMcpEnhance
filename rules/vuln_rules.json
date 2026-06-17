@@ -1,0 +1,71 @@
+{
+  "likely_fixed_types": [
+    "sql_injection",
+    "command_injection",
+    "path_traversal",
+    "ssti",
+    "xss_reflected"
+  ],
+  "rules": [
+    {
+      "type": "sql_injection",
+      "label": "SQL注入",
+      "gate": {
+        "param": "q",
+        "payload": "' OR '1'='1"
+      },
+      "indicators": {
+        "vulnerable_patterns": ["SQL syntax", "mysql_fetch", "odbc_", "Unclosed quotation", "ORA-", "PostgreSQL", "SQLite"],
+        "fixed_patterns": []
+      }
+    },
+    {
+      "type": "command_injection",
+      "label": "命令执行",
+      "gate": {
+        "param": "cmd",
+        "payload": ";echo VULN_CHECK"
+      },
+      "indicators": {
+        "vulnerable_patterns": ["VULN_CHECK"],
+        "fixed_patterns": []
+      }
+    },
+    {
+      "type": "path_traversal",
+      "label": "路径遍历",
+      "gate": {
+        "param": "file",
+        "payload": "../../../../etc/passwd"
+      },
+      "indicators": {
+        "vulnerable_patterns": ["root:", "bin:", "nobody:"],
+        "fixed_patterns": []
+      }
+    },
+    {
+      "type": "ssti",
+      "label": "模板注入",
+      "gate": {
+        "param": "name",
+        "payload": "{{7*7}}"
+      },
+      "indicators": {
+        "vulnerable_patterns": ["49"],
+        "fixed_patterns": []
+      }
+    },
+    {
+      "type": "xss_reflected",
+      "label": "反射型XSS",
+      "gate": {
+        "param": "q",
+        "payload": "<script>alert(1)</script>"
+      },
+      "indicators": {
+        "vulnerable_patterns": ["<script>alert(1)</script>"],
+        "fixed_patterns": []
+      }
+    }
+  ]
+}

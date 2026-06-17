@@ -24,7 +24,7 @@ except ModuleNotFoundError:  # direct script execution from TOOLS/utils
 _LOGIN_RE = re.compile(r"login|登录|未登录|401|unauthorized", re.I)
 _SUCCESS_RE = re.compile(r"success|\"code\":0|\"code\":200|\"ok\":true|\"status\":1", re.I)
 _EXPIRED_RE = re.compile(r"expired|used|invalid|失效|已使用|验证码错误", re.I)
-_FAIL_RE = re.compile(r"不存在|invalid|not.found|error|fail", re.I)
+_FAIL_RE = re.compile(r'不存在|invalid|not.found|error|fail|"code"\s*:\s*-\d+', re.I)
 
 _PHONE_RE = re.compile(r"1[3-9]\d{9}")
 _IDCARD_RE = re.compile(r"\d{17}[\dXx]")
@@ -143,6 +143,31 @@ def compare_password_reset(a_body: str, a_status: int) -> tuple[str, str]:
     return "false_positive", f"status={a_status}"
 
 
+def compare_boundary_value(
+    a_status: int,
+    a_body: str,
+    b_status: int,
+    b_body: str,
+    target_param: str = "",
+) -> tuple[str, str]:
+    """a=正常参数基线，b=边界值（-1/0/MAX）替换后响应。
+
+    Returns (verdict, evidence):
+      "confirmed"      — 边界值被接受且有成功信号（价格/数量篡改成功）
+      "low_confidence" — b=200 但响应无明确成功/失败信号
+      "false_positive" — 边界值被拒绝（服务端正确校验输入）
+    """
+    if a_status != 200:
+        return "false_positive", f"baseline a_status={a_status}, not a valid endpoint"
+    if b_status != 200:
+        return "false_positive", f"boundary value rejected b_status={b_status}"
+    if _SUCCESS_RE.search(b_body):
+        return "confirmed", f"param={target_param} boundary value accepted with success signal"
+    if _FAIL_RE.search(b_body):
+        return "false_positive", f"param={target_param} boundary value: 200 but error in body"
+    return "low_confidence", f"param={target_param} boundary value: 200 no clear signal"
+
+
 def compare_vertical_priv_esc(
     a_status: int,
     a_body: str,
@@ -207,6 +232,7 @@ _HANDLERS = {
     "user_enum": lambda a: compare_user_enum(a.a_body, a.b_body, a.a_status, a.b_status),
     "captcha_reuse": lambda a: compare_captcha_reuse(a.a_body, a.b_body, a.a_status, a.b_status),
     "password_reset_takeover": lambda a: compare_password_reset(a.a_body, a.a_status),
+    "boundary_value": lambda a: compare_boundary_value(a.a_status, a.a_body, a.b_status, a.b_body, a.target_param),
     "vertical_priv_esc": lambda a: compare_vertical_priv_esc(a.a_status, a.a_body, a.b_status, a.b_body),
     "batch_idor": lambda a: compare_batch_idor(
         a.a_status, a.a_body, a.b_status, a.b_body, a.unauth_status, a.unauth_body

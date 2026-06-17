@@ -27,6 +27,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # auth/→TOOLS/�
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # TOOLS/
 from db.cookie_helper import get_auth_cookies_dict  # noqa: E402
 from db.db_utils import connect, find_db  # noqa: E402
+from utils.signal_filter import (  # noqa: E402
+    canonical_query_string,
+    canonicalize_url,
+    classify_auth_surface,
+    classify_endpoint,
+    classify_mmx_fallback,
+    endpoint_fingerprint,
+    summarize_response,
+)
 
 STATIC_TYPES = {"stylesheet", "image", "font", "media", "websocket", "manifest", "ping"}
 STATIC_EXT_RE = re.compile(r"\.(css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|mp4|mp3|pdf|zip)(\?.*)?$", re.I)
@@ -384,32 +393,73 @@ def write_explore_results_to_db(
     """写 suspicious_points + pages，返回 {'sp': N, 'pages': N}。"""
     sp_count = 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sp_cols = {row["name"] for row in conn.execute("PRAGMA table_info(suspicious_points)").fetchall()}
     for req in api_requests:
         params = req.get("params", [])
         context = req.get("nav_context", "")
-        url = req["url"]
-        method = req.get("method", "GET")
-        existing = conn.execute(
-            "SELECT id FROM suspicious_points WHERE url=? AND method=? AND test_type='auth_surface' LIMIT 1",
-            (url, method),
-        ).fetchone()
+        method = req.get("method", "GET").upper()
+        response_summary = req.get("response_summary") or {}
+        auth_type, risk_score, reason = classify_auth_surface(
+            req["url"],
+            method,
+            params,
+            response_summary=response_summary,
+            has_body=bool(req.get("post_data")),
+        )
+        if auth_type in ("auth_required", "public_api", "noise_counter"):
+            continue
+        signal = classify_endpoint(req["url"], method, params)
+        url = signal.canonical_url
+        fingerprint = endpoint_fingerprint(req["url"], method, params)
+        test_type = auth_type
+        if "endpoint_fingerprint" in sp_cols:
+            existing = conn.execute(
+                """SELECT id FROM suspicious_points
+                   WHERE source='auth_explore' AND endpoint_fingerprint=? AND test_type=? LIMIT 1""",
+                (fingerprint, test_type),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT id FROM suspicious_points WHERE url=? AND method=? AND test_type=? LIMIT 1",
+                (url, method, test_type),
+            ).fetchone()
         if existing:
             continue
         sp_id = f"{sp_prefix}-{uuid.uuid4().hex[:8]}"
+        evidence = {
+            "nav_context": context,
+            "params": params,
+            "classification": auth_type,
+            "classification_reason": reason,
+            "response_summary": response_summary,
+        }
+        values = {
+            "id": sp_id,
+            "url": url,
+            "param": ", ".join(params) if params else "",
+            "method": method,
+            "test_type": test_type,
+            "evidence": json.dumps(evidence, ensure_ascii=False),
+            "source": "auth_explore",
+            "reasoning": f"认证用户操作触发的高价值 API，分类={auth_type}，原因={reason}，来源: {context}",
+            "risk": "High" if risk_score >= 60 else "Medium",
+            "test_status": "untested",
+            "created_at": now,
+        }
+        optional = {
+            "endpoint_fingerprint": fingerprint,
+            "response_summary": json.dumps(response_summary, ensure_ascii=False),
+            "risk_score": risk_score,
+        }
+        values.update({key: value for key, value in optional.items() if key in sp_cols})
+        columns = list(values.keys())
+        placeholders = ", ".join("?" for _ in columns)
         cur = conn.execute(
-            """INSERT INTO suspicious_points
-               (id, url, param, method, test_type, evidence, source, reasoning, risk, test_status, created_at)
-               VALUES (?, ?, ?, ?, 'auth_surface', ?, 'auth_explore', ?, 'Medium', 'untested', ?)
-               ON CONFLICT(id) DO NOTHING""",
-            (
-                sp_id,
-                url,
-                ", ".join(params) if params else "",
-                method,
-                f"认证后页面 [{context}] 发出的请求，params={params}",
-                f"认证用户操作触发的 API，存在 IDOR/越权/敏感数据暴露风险。来源: {context}",
-                now,
-            ),
+            f"""INSERT INTO suspicious_points
+                ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(id) DO NOTHING""",
+            tuple(values[col] for col in columns),
         )
         sp_count += cur.rowcount
 
@@ -430,6 +480,12 @@ def write_explore_results_to_db(
 
 def _is_hunt_candidate(req: dict) -> bool:
     """Heuristic pre-filter: 值得做三层重放测试的请求，不依赖 URL pattern。"""
+    signal = classify_endpoint(req.get("url", ""), req.get("method", "GET"), req.get("params", []))
+    if signal.is_candidate:
+        req["url"] = signal.canonical_url
+        return True
+    if signal.value in ("low_value", "ignore"):
+        return False
     method = req.get("method", "GET").upper()
     if method in ("POST", "PUT", "PATCH", "DELETE"):
         return True
@@ -493,8 +549,8 @@ def _classify_with_mmx(candidates: list[dict], tmp_dir: Path) -> list[dict]:
             if start >= 0 and end > start:
                 classified = json.loads(raw[start : end + 1])
             else:
-                print("[auth_explore] mmx 分类输出无法解析，已跳过 hunt_queue 写入", file=sys.stderr)
-                return []
+                print("[auth_explore] mmx 分类输出无法解析，使用本地启发式分类", file=sys.stderr)
+                return [item for item in (classify_mmx_fallback(req) for req in candidates) if item]
 
         idx_map = {item["idx"]: item for item in classified if isinstance(item, dict)}
         results = []
@@ -513,8 +569,8 @@ def _classify_with_mmx(candidates: list[dict], tmp_dir: Path) -> list[dict]:
         return results
 
     except Exception as e:  # noqa: BLE001
-        print(f"[auth_explore] mmx 分类异常: {e}，已跳过 hunt_queue 写入", file=sys.stderr)
-        return []
+        print(f"[auth_explore] mmx 分类异常: {e}，使用本地启发式分类", file=sys.stderr)
+        return [item for item in (classify_mmx_fallback(req) for req in candidates) if item]
 
 
 def write_hunt_queue(
@@ -527,9 +583,8 @@ def write_hunt_queue(
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for req in classified:
         url = req.get("url", "")
-        parsed = urlparse(url)
-        url_base = url.split("?")[0]
-        query_string = parsed.query
+        url_base = canonicalize_url(url).split("?")[0]
+        query_string = canonical_query_string(url)
         body = req.get("post_data") or ""
         content_type = "application/json" if body and body.lstrip().startswith("{") else ""
         try:
@@ -575,6 +630,7 @@ async def explore_authenticated(
     all_api_requests: list[dict] = []
     all_page_urls: set[str] = set()
     current_nav_context = "首页"
+    response_summaries: dict[tuple[str, str], dict] = {}
 
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp(cdp_url)
@@ -614,9 +670,12 @@ async def explore_authenticated(
                 return
             try:
                 content_type = response.headers.get("content-type", "")
+                body_text = await response.text()
+                key = (response.url, response.request.method.upper())
+                response_summaries[key] = summarize_response(response.status, content_type, body_text[:20000])
                 if "json" not in content_type.lower():
                     return
-                payload = await response.json()
+                payload = json.loads(body_text)
                 response_candidates.extend(
                     extract_response_candidates(payload, seed_url=seed_url, source_url=response.url)
                 )
@@ -758,7 +817,8 @@ async def explore_authenticated(
     seen: set[tuple[str, str]] = set()
     deduped = []
     for r in filtered:
-        key = (r["url"].split("?")[0], r["method"])
+        r["response_summary"] = response_summaries.get((r["url"], r["method"].upper()), {})
+        key = (endpoint_fingerprint(r["url"], r["method"], r.get("params", [])), r["method"])
         if key not in seen:
             seen.add(key)
             deduped.append(r)
@@ -791,7 +851,7 @@ def main() -> None:
         sys.exit("[error] 无 seed_url，请先运行 init_scan.py")
 
     base_domain = urlparse(seed_url).netloc
-    cookies = get_auth_cookies_dict(str(db_path), base_domain)
+    cookies = get_auth_cookies_dict(str(db_path), base_domain, role="primary")
 
     print(f"[auth_explore] 目标: {args.target}  seed: {seed_url}  cookies: {len(cookies)} 条")
 

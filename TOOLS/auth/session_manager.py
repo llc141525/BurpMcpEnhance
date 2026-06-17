@@ -35,9 +35,12 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def sessions_valid(conn: sqlite3.Connection) -> bool:
+def sessions_valid(conn: sqlite3.Connection, role: str = "primary") -> bool:
     """True 表示存在至少一个 is_active=1 且未过期的 session。"""
-    rows = conn.execute("SELECT is_active, expires_at FROM auth_sessions WHERE is_active=1").fetchall()
+    rows = conn.execute(
+        "SELECT is_active, expires_at FROM auth_sessions WHERE is_active=1 AND COALESCE(role, 'primary')=?",
+        (role,),
+    ).fetchall()
     if not rows:
         return False
     now = datetime.now()
@@ -53,7 +56,7 @@ def sessions_valid(conn: sqlite3.Connection) -> bool:
     return False
 
 
-def get_credentials(conn: sqlite3.Connection) -> tuple[str, str, str | None] | None:
+def get_credentials(conn: sqlite3.Connection, account_label: str = "primary") -> tuple[str, str, str | None] | None:
     """返回 (username, password, login_url) 或 None。
 
     优先从 auth_credentials 拿（含 login_url），fallback 到 auth_sessions。
@@ -61,8 +64,10 @@ def get_credentials(conn: sqlite3.Connection) -> tuple[str, str, str | None] | N
     # auth_credentials 表（migration 010 添加）
     try:
         row = conn.execute(
-            "SELECT username, password, login_url FROM auth_credentials "
-            "WHERE username IS NOT NULL ORDER BY id DESC LIMIT 1"
+            """SELECT username, password, login_url FROM auth_credentials
+               WHERE username IS NOT NULL AND account_label=?
+               ORDER BY id DESC LIMIT 1""",
+            (account_label,),
         ).fetchone()
         if row and row["username"]:
             return row["username"], row["password"], row["login_url"]
@@ -71,7 +76,10 @@ def get_credentials(conn: sqlite3.Connection) -> tuple[str, str, str | None] | N
 
     # fallback：auth_sessions 里任意 source 存有凭据的行
     row = conn.execute(
-        "SELECT username, password FROM auth_sessions WHERE username IS NOT NULL ORDER BY id DESC LIMIT 1"
+        """SELECT username, password FROM auth_sessions
+           WHERE username IS NOT NULL AND COALESCE(role, 'primary')=?
+           ORDER BY id DESC LIMIT 1""",
+        (account_label,),
     ).fetchone()
     if row and row["username"]:
         return row["username"], row["password"], None
@@ -79,7 +87,7 @@ def get_credentials(conn: sqlite3.Connection) -> tuple[str, str, str | None] | N
     return None
 
 
-def run_relogin(target: str, login_url: str, username: str, password: str) -> bool:
+def run_relogin(target: str, login_url: str, username: str, password: str, role: str = "primary") -> bool:
     result = subprocess.run(  # noqa: S603
         [
             PYTHON,
@@ -92,6 +100,10 @@ def run_relogin(target: str, login_url: str, username: str, password: str) -> bo
             username,
             "--password",
             password,
+            "--role",
+            role,
+            "--account-label",
+            role,
         ],
         timeout=360,
         check=False,
@@ -99,10 +111,10 @@ def run_relogin(target: str, login_url: str, username: str, password: str) -> bo
     return result.returncode == 0
 
 
-def try_cdp_capture(target: str, db_path: str) -> bool:
+def try_cdp_capture(target: str, db_path: str, role: str = "primary") -> bool:
     """尝试从现有 CDP 浏览器捕获认证态。"""
     try:
-        counts = capture_to_db(target, db_path)
+        counts = capture_to_db(target, db_path, role=role)
         print(
             f"[session_manager] CDP 捕获认证态: cookies={counts.get('cookies', 0)} "
             f"storage_tokens={counts.get('storage_tokens', 0)}",
@@ -114,7 +126,7 @@ def try_cdp_capture(target: str, db_path: str) -> bool:
         return False
 
 
-def ensure_session(target: str, login_url_override: str | None = None) -> bool:
+def ensure_session(target: str, login_url_override: str | None = None, role: str = "primary") -> bool:
     """检查 session；过期则自动续期。返回 True 表示可继续。"""
     db_path = find_db(target)
     if not db_path:
@@ -134,26 +146,30 @@ def ensure_session(target: str, login_url_override: str | None = None) -> bool:
     conn.close()
     conn = connect(db_path)  # 重连读最新状态
 
-    if sessions_valid(conn):
-        print("[session_manager] Session 有效", file=sys.stderr)
+    if sessions_valid(conn, role=role):
+        print(f"[session_manager] {role} Session 有效", file=sys.stderr)
         conn.close()
         return True
 
-    print("[session_manager] Session 已过期，尝试从现有 Chrome 捕获认证态...", file=sys.stderr)
+    print(f"[session_manager] {role} Session 已过期", file=sys.stderr)
     conn.close()
 
-    if try_cdp_capture(target, db_path):
-        conn = connect(db_path)
-        if sessions_valid(conn):
-            print("[session_manager] CDP 认证态可用", file=sys.stderr)
+    if role == "primary":
+        print("[session_manager] 尝试从现有 Chrome 捕获 primary 认证态...", file=sys.stderr)
+        if try_cdp_capture(target, db_path, role=role):
+            conn = connect(db_path)
+            if sessions_valid(conn, role=role):
+                print(f"[session_manager] CDP {role} 认证态可用", file=sys.stderr)
+                conn.close()
+                return True
             conn.close()
-            return True
-        conn.close()
+    else:
+        print("[session_manager] 跳过 secondary 的 CDP 快速捕获，避免误标当前 primary 浏览器态", file=sys.stderr)
 
-    print("[session_manager] CDP 认证态不可用，尝试 browser-use 续期...", file=sys.stderr)
+    print(f"[session_manager] 尝试使用 {role} 凭据通过 browser-use 续期...", file=sys.stderr)
 
     conn = connect(db_path)
-    creds = get_credentials(conn)
+    creds = get_credentials(conn, account_label=role)
     conn.close()
 
     if not creds:
@@ -167,8 +183,8 @@ def ensure_session(target: str, login_url_override: str | None = None) -> bool:
         print("[session_manager] 未找到 login_url，请用 --login-url 参数指定", file=sys.stderr)
         return False
 
-    print(f"[session_manager] 使用凭据 {username} 重新登录: {login_url}", file=sys.stderr)
-    success = run_relogin(target, login_url, username, password)
+    print(f"[session_manager] 使用 {role} 凭据 {username} 重新登录: {login_url}", file=sys.stderr)
+    success = run_relogin(target, login_url, username, password, role=role)
 
     if success:
         print("[session_manager] 续期成功", file=sys.stderr)
@@ -182,9 +198,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Session 续期工具")
     parser.add_argument("--target", required=True)
     parser.add_argument("--login-url", default=None, help="登录页 URL（覆盖 DB 中存储的值）")
+    parser.add_argument("--role", default="primary", choices=["primary", "secondary"], help="检查/续期的账号角色")
     args = parser.parse_args()
 
-    ok = ensure_session(args.target, args.login_url)
+    ok = ensure_session(args.target, args.login_url, role=args.role)
     sys.exit(0 if ok else 1)
 
 

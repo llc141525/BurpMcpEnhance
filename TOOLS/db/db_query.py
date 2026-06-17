@@ -136,7 +136,7 @@ def init_db(db_path, target_name):
         conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.execute("INSERT INTO targets (target_name, domain) VALUES (?, ?)", [target_name, ""])
         # 标记所有已存在的 migration 为已应用
-        migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
+        migrations_dir = Path(__file__).resolve().parent.parent.parent / "migrations"
         if migrations_dir.is_dir():
             for f in sorted(migrations_dir.glob("*.sql")):
                 m = re.match(r"^(\d+)_", f.name)

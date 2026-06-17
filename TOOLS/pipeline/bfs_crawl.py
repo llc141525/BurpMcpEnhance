@@ -38,17 +38,22 @@ SKIP_EXT_RE = re.compile(
 
 
 def get_seed_urls(conn: sqlite3.Connection) -> list[str]:
+    # First try unvisited depth-0 seeds
     rows = conn.execute("SELECT url FROM pages WHERE depth=0 AND status='queued' ORDER BY id LIMIT 20").fetchall()
-    if not rows:
-        rows = conn.execute("SELECT domain FROM targets WHERE domain IS NOT NULL AND domain != ''").fetchall()
-        seeds = []
-        for r in rows:
-            d = r["domain"].strip()
-            if not d.startswith("http"):
-                d = "https://" + d
-            seeds.append(d)
-        return seeds
-    return [r["url"] for r in rows]
+    if rows:
+        return [r["url"] for r in rows]
+    # Then pick queued pages at any depth for BFS continuation
+    rows = conn.execute("SELECT url FROM pages WHERE status='queued' ORDER BY id LIMIT 20").fetchall()
+    if rows:
+        return [r["url"] for r in rows]
+    rows = conn.execute("SELECT domain FROM targets WHERE domain IS NOT NULL AND domain != ''").fetchall()
+    seeds = []
+    for r in rows:
+        d = r["domain"].strip()
+        if not d.startswith("http"):
+            d = "https://" + d
+        seeds.append(d)
+    return seeds
 
 
 def same_domain(base: str, url: str) -> bool:
@@ -161,7 +166,7 @@ def main() -> None:
     if not args.no_chrome:
         try:
             result = subprocess.run(  # noqa: S603
-                [sys.executable, str(Path(__file__).parent / "chrome_manager.py"), "--target", args.target],
+                [sys.executable, str(Path(__file__).parent.parent / "auth" / "chrome_manager.py"), "--target", args.target],
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -184,12 +189,20 @@ def main() -> None:
     print(f"[db] {db_path.name}")
     print(f"[seeds] {seed_urls[:5]}")
 
-    cookie_header = get_auth_cookie_header(str(db_path), seed_urls[0] if seed_urls else "")
+    cookie_header = get_auth_cookie_header(str(db_path), seed_urls[0] if seed_urls else "", role="primary")
     if cookie_header:
         print(f"[bfs_crawl] 带认证 Cookie 爬取 ({len(cookie_header.split(';'))} 条)", file=sys.stderr)
 
     discovered = run_katana(seed_urls, args.depth, args.max_pages, cookie_header=cookie_header)
     pages_added, js_added = import_to_db(conn, discovered, seed_urls)
+
+    # Mark crawled seeds as visited so probe_runner can process them and BFS doesn't re-crawl
+    if seed_urls:
+        placeholders = ",".join("?" * len(seed_urls))
+        conn.execute(f"UPDATE pages SET status='visited' WHERE url IN ({placeholders})", seed_urls)
+        conn.commit()
+        print(f"[bfs_crawl] 标记 {len(seed_urls)} 个种子为 visited")
+
     conn.close()
 
     print("\n=== bfs_crawl 完成 ===")

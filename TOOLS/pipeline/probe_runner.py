@@ -350,7 +350,7 @@ def main() -> None:
     # 获取认证 Cookie
     seed_row = conn.execute("SELECT seed_url FROM scan_state WHERE id=1").fetchone()
     seed_domain = seed_row[0] if seed_row and seed_row[0] else ""
-    cookie_header = get_auth_cookie_header(str(db_path), seed_domain)
+    cookie_header = get_auth_cookie_header(str(db_path), seed_domain, role="primary")
     if cookie_header:
         print(f"[probe_runner] 带认证 Cookie ({len(cookie_header.split(';'))} 条)")
 

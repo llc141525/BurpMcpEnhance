@@ -7,7 +7,10 @@ from auth.auth_explore import (
     is_unsafe_label,
     normalize_candidate_url,
     parse_request_params,
+    write_explore_results_to_db,
+    write_hunt_queue,
 )
+import sqlite3
 
 
 class TestFilterApiRequests:
@@ -160,3 +163,149 @@ class TestCandidateQueue:
         values = [c["value"] for c in queue.items()]
         assert len([v for v in values if "jwglxt.example.edu/jwglxt" in v]) == 2
         assert "https://ecard.example.edu/home" in values
+
+
+class TestExploreDbWrites:
+    def _conn(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE suspicious_points (
+                id TEXT PRIMARY KEY,
+                url TEXT,
+                param TEXT,
+                method TEXT,
+                test_type TEXT,
+                evidence TEXT,
+                source TEXT,
+                reasoning TEXT,
+                risk TEXT,
+                test_status TEXT,
+                created_at TEXT,
+                endpoint_fingerprint TEXT,
+                response_summary TEXT,
+                risk_score INTEGER DEFAULT 0
+            );
+            CREATE UNIQUE INDEX idx_suspicious_points_auth_fingerprint
+                ON suspicious_points(source, endpoint_fingerprint, test_type)
+                WHERE endpoint_fingerprint IS NOT NULL;
+            CREATE TABLE pages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT UNIQUE,
+                depth INTEGER,
+                status TEXT
+            );
+            CREATE TABLE hunt_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id INTEGER,
+                method TEXT NOT NULL,
+                url TEXT NOT NULL,
+                query_string TEXT,
+                body TEXT,
+                content_type TEXT,
+                endpoint_type TEXT,
+                business_intent TEXT,
+                risk_hint TEXT,
+                source TEXT,
+                status TEXT,
+                created_at TEXT,
+                UNIQUE(method, url, query_string)
+            );
+            """
+        )
+        return conn
+
+    def test_low_value_xhr_does_not_write_suspicious_point(self):
+        conn = self._conn()
+
+        counts = write_explore_results_to_db(
+            conn,
+            [
+                {
+                    "url": "https://portal.example.edu/portal-api/v2/theme/themeInfo?random_number=1",
+                    "method": "GET",
+                    "params": ["random_number"],
+                    "nav_context": "首页",
+                },
+                {
+                    "url": "https://portal.example.edu/api/user/profile?random_number=1",
+                    "method": "GET",
+                    "params": ["random_number"],
+                    "nav_context": "个人中心",
+                    "response_summary": {
+                        "status": 200,
+                        "sensitive_markers": {"fields": 1, "phones": 0, "idcards": 0, "emails": 0, "jwts": 0, "token_fields": 0},
+                    },
+                },
+            ],
+            [],
+        )
+
+        rows = conn.execute("SELECT url, test_type, risk_score FROM suspicious_points").fetchall()
+        conn.close()
+        assert counts["sp"] == 1
+        assert rows[0]["url"] == "https://portal.example.edu/api/user/profile"
+        assert rows[0]["test_type"] == "info_leak_candidate"
+        assert rows[0]["risk_score"] >= 60
+
+    def test_dedupes_suspicious_points_by_endpoint_fingerprint(self):
+        conn = self._conn()
+
+        counts = write_explore_results_to_db(
+            conn,
+            [
+                {
+                    "url": "https://portal.example.edu/api/user/profile?random_number=1&uid=42&pageSize=10",
+                    "method": "GET",
+                    "params": ["random_number", "uid", "pageSize"],
+                    "nav_context": "个人中心",
+                },
+                {
+                    "url": "https://portal.example.edu/api/user/profile?random_number=2&uid=42&pageSize=20",
+                    "method": "GET",
+                    "params": ["random_number", "uid", "pageSize"],
+                    "nav_context": "个人中心",
+                },
+            ],
+            [],
+        )
+
+        rows = conn.execute("SELECT endpoint_fingerprint, test_type FROM suspicious_points").fetchall()
+        conn.close()
+        assert counts["sp"] == 1
+        assert len(rows) == 1
+        assert rows[0]["endpoint_fingerprint"] == "GET|portal.example.edu|/api/user/profile|uid"
+        assert rows[0]["test_type"] == "idor_candidate"
+
+    def test_hunt_queue_dedupes_canonical_random_params(self):
+        conn = self._conn()
+
+        count = write_hunt_queue(
+            conn,
+            [
+                {
+                    "url": "https://portal.example.edu/api/user/profile?random_number=1&uid=42",
+                    "method": "GET",
+                    "post_data": "",
+                    "endpoint_type": "business_api",
+                    "business_intent": "profile",
+                    "risk_hint": "High",
+                },
+                {
+                    "url": "https://portal.example.edu/api/user/profile?random_number=2&uid=42",
+                    "method": "GET",
+                    "post_data": "",
+                    "endpoint_type": "business_api",
+                    "business_intent": "profile",
+                    "risk_hint": "High",
+                },
+            ],
+            1,
+        )
+
+        rows = conn.execute("SELECT url, query_string FROM hunt_queue").fetchall()
+        conn.close()
+        assert count == 1
+        assert rows[0]["url"] == "https://portal.example.edu/api/user/profile"
+        assert rows[0]["query_string"] == "uid=42"

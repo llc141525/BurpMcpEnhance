@@ -49,6 +49,74 @@ HIGH_PRIORITY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# JSFinder 正则：提取 JS 内容中的完整 URL 和相对路径
+_URL_FULL_RE = re.compile(
+    r'["\']((https?://[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}(?::[0-9]{1,5})?'
+    r'(?:/[^\s"\'<>\\\n]{0,200})?))["\'`]',
+    re.IGNORECASE,
+)
+_URL_PATH_RE = re.compile(
+    r'["\'`]((?:/(?:api|v\d|rest|rpc|graphql|admin|user|auth|account|order|pay|upload|download)'
+    r'[a-zA-Z0-9_\-\./]*)[^\s"\'<>`\\\n]{0,100})["\'`]',
+    re.IGNORECASE,
+)
+
+# mmx 只分析含这些关键词的文件（高价值信号）
+_MMX_WORTH_RE = re.compile(
+    r"(api[_\-]?key|secret|token|password|auth|Bearer|Authorization|accessKey|appSecret"
+    r"|REACT_APP_|VUE_APP_|config\.|/api/|/v\d/|graphql|upload|admin)",
+    re.IGNORECASE,
+)
+
+
+def extract_urls_jsfinder(content: str, base_url: str = "") -> list[str]:
+    """JSFinder 层：用正则从 JS 内容提取 URL 和 API 路径，返回去重列表。"""
+    from urllib.parse import urljoin, urlparse  # noqa: PLC0415
+
+    found: set[str] = set()
+
+    for m in _URL_FULL_RE.finditer(content):
+        url = m.group(1).rstrip(".,;)")
+        if url:
+            found.add(url)
+
+    if base_url:
+        base_origin = "{0.scheme}://{0.netloc}".format(urlparse(base_url))
+        for m in _URL_PATH_RE.finditer(content):
+            path = m.group(1).rstrip(".,;)")
+            if path:
+                found.add(urljoin(base_origin, path))
+
+    return list(found)
+
+
+def write_pages_from_js(conn: sqlite3.Connection, urls: list[str], js_url: str) -> int:
+    """将 JSFinder 发现的 URL 写入 pages 表（source='jsfinder'）。返回新增条数。"""
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    count = 0
+    try:
+        base_host = urlparse(js_url).netloc
+    except Exception:
+        base_host = ""
+
+    for url in urls:
+        try:
+            host = urlparse(url).netloc
+        except Exception:
+            continue
+        if base_host and host and host != base_host and not host.endswith(f".{base_host.split('.', 1)[-1]}"):
+            continue  # 跳过跨域 URL
+        cur = conn.execute(
+            "INSERT INTO pages (url, depth, status, source) VALUES (?, 2, 'queued', 'jsfinder') "
+            "ON CONFLICT(url) DO NOTHING",
+            (url,),
+        )
+        count += cur.rowcount
+    conn.commit()
+    return count
+
+
 MMX_PROMPT = """\
 分析以下 JavaScript 代码，以 JSON 格式返回安全相关信息（只返回 JSON，无其他内容）：
 {{
@@ -248,6 +316,21 @@ def analyze_batch(target: str, batch: int = 5) -> dict:
             results["details"].append(f"✗ {Path(js_url).name}  → fetch 失败")
             continue
 
+        # ── 第一层：JSFinder 正则提取 URL，全部写入 pages 表 ──────────────────
+        found_urls = extract_urls_jsfinder(content, js_url)
+        page_count = write_pages_from_js(conn, found_urls, js_url)
+
+        # ── 第二层：mmx 深度分析（只对含高价值信号的文件）─────────────────────
+        worth_mmx = bool(_MMX_WORTH_RE.search(content))
+        if not worth_mmx:
+            conn.execute("UPDATE js_files SET analyzed=1 WHERE url=?", (js_url,))
+            conn.commit()
+            detail = f"- {Path(js_url).name}  → JSFinder: {page_count} URL，跳过 mmx"
+            print(f"    {detail}")
+            results["details"].append(detail)
+            results["analyzed"] += 1
+            continue
+
         raw = call_mmx(content, js_url)
         if not raw:
             TMP_DIR.mkdir(exist_ok=True)
@@ -272,7 +355,7 @@ def analyze_batch(target: str, batch: int = 5) -> dict:
 
         ep_count = len(findings.get("api_endpoints", []))
         sec_count = len(findings.get("hardcoded_secrets", []))
-        detail = f"✓ {Path(js_url).name}  → {ep_count} 端点, {sec_count} 密钥"
+        detail = f"✓ {Path(js_url).name}  → JSFinder: {page_count} URL | mmx: {ep_count} 端点, {sec_count} 密钥"
         print(f"    {detail}")
         results["details"].append(detail)
 

@@ -75,8 +75,15 @@ CREATE TABLE IF NOT EXISTS suspicious_points (
     test_status TEXT DEFAULT 'untested',
     burp_request_id INTEGER,
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
-    notes TEXT
+    notes TEXT,
+    endpoint_fingerprint TEXT,
+    response_summary TEXT,
+    risk_score INTEGER DEFAULT 0
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_suspicious_points_auth_fingerprint
+    ON suspicious_points(source, endpoint_fingerprint, test_type)
+    WHERE endpoint_fingerprint IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS findings (
     id TEXT PRIMARY KEY,
@@ -133,7 +140,9 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     role TEXT DEFAULT 'primary',
     expires_at TEXT,
     last_checked_at TEXT,
-    cookie_source TEXT DEFAULT 'manual'
+    cookie_source TEXT DEFAULT 'manual',
+    username TEXT DEFAULT NULL,
+    password TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS hunt_queue (
@@ -162,8 +171,8 @@ CREATE INDEX IF NOT EXISTS idx_hunt_queue_status ON hunt_queue(status);
 CREATE INDEX IF NOT EXISTS idx_hunt_queue_target ON hunt_queue(target_id);
 CREATE INDEX IF NOT EXISTS idx_hunt_queue_source ON hunt_queue(source);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_name_domain
-    ON auth_sessions(token_name, domain);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_role_name_domain
+    ON auth_sessions(role, token_name, domain);
 
 CREATE TABLE IF NOT EXISTS auth_storage_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

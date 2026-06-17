@@ -3,6 +3,7 @@ import sqlite3
 from auth.auth_state import (
     classify_token_kind,
     cookies_to_auth_session_rows,
+    export_header,
     storage_items_to_tokens,
     upsert_storage_tokens,
 )
@@ -103,6 +104,29 @@ class TestStorageTokens:
         assert rows[0]["token_kind"] == "bearer"  # noqa: S105
         assert rows[0]["expires_at"] == "2099-01-01 00:00:00"
 
+    def test_upsert_storage_tokens_creates_missing_table(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+
+        upsert_storage_tokens(
+            conn,
+            [
+                {
+                    "role": "primary",
+                    "storage_type": "localStorage",
+                    "origin": "https://portal.example.edu",
+                    "token_name": "accessToken",
+                    "token_value": "abc.def.ghi",
+                    "token_kind": "jwt",
+                    "expires_at": None,
+                }
+            ],
+        )
+
+        row = conn.execute("SELECT token_name FROM auth_storage_tokens").fetchone()
+        conn.close()
+        assert row["token_name"] == "accessToken"
+
 
 class TestCookieRows:
     def test_cookies_to_auth_session_rows_normalizes_playwright_cookies(self):
@@ -126,8 +150,62 @@ class TestCookieRows:
                 "path": "/",
                 "expires_at": "2100-01-01 00:00:00",
                 "cookie_source": "cdp_capture",
+                "role": "primary",
             }
         ]
+
+    def test_cookies_to_auth_session_rows_preserves_role(self):
+        rows = cookies_to_auth_session_rows(
+            [{"name": "SESSION", "value": "abc", "domain": ".example.edu", "path": "/", "expires": -1}],
+            role="secondary",
+        )
+
+        assert rows[0]["role"] == "secondary"
+
+
+class TestExportHeader:
+    def test_export_header_matches_cookie_domain_when_url_has_port(self, tmp_path, monkeypatch):
+        from auth import auth_state
+
+        db_file = str(tmp_path / "target.db")
+        conn = sqlite3.connect(db_file)
+        conn.executescript(
+            _AUTH_STORAGE_DDL
+            + """
+            CREATE TABLE auth_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_type TEXT,
+                token_name TEXT,
+                token_value TEXT,
+                domain TEXT,
+                path TEXT DEFAULT '/',
+                is_active INTEGER DEFAULT 1,
+                role TEXT DEFAULT 'primary'
+            );
+            INSERT INTO auth_sessions (token_type, token_name, token_value, domain)
+            VALUES ('cookie', 'SESSION', 'abc', '.example.edu');
+            """
+        )
+        conn.close()
+
+        monkeypatch.setattr(auth_state, "find_db", lambda target: db_file)
+
+        headers = export_header("目标", "https://portal.example.edu:8443/home")
+
+        assert headers["Cookie"] == "SESSION=abc"
+
+
+class TestSchemaCompatibility:
+    def test_full_schema_auth_sessions_supports_stored_credentials(self):
+        from pathlib import Path
+
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(Path("TOOLS/db/schema.sql").read_text(encoding="utf-8"))
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
+        conn.close()
+
+        assert {"username", "password"} <= columns
 
 
 class TestSessionManagerPriority:
@@ -146,6 +224,7 @@ class TestSessionManagerPriority:
                 domain TEXT,
                 path TEXT DEFAULT '/',
                 is_active INTEGER DEFAULT 0,
+                role TEXT DEFAULT 'primary',
                 expires_at TEXT,
                 username TEXT,
                 password TEXT
@@ -174,12 +253,12 @@ class TestSessionManagerPriority:
         capture_calls = []
         relogin_calls = []
 
-        def fake_sessions_valid(_conn):
+        def fake_sessions_valid(_conn, role="primary"):
             valid_calls["count"] += 1
             return valid_calls["count"] >= 2
 
-        def fake_capture_to_db(target, path):
-            capture_calls.append((target, path))
+        def fake_capture_to_db(target, path, role="primary"):
+            capture_calls.append((target, path, role))
             return {"cookies": 1, "storage_tokens": 0}
 
         monkeypatch.setattr(session_manager, "find_db", lambda target: db_file)
@@ -193,5 +272,66 @@ class TestSessionManagerPriority:
         )
 
         assert session_manager.ensure_session("目标")
-        assert capture_calls == [("目标", db_file)]
+        assert capture_calls == [("目标", db_file, "primary")]
         assert relogin_calls == []
+
+    def test_secondary_session_skips_cdp_capture_and_relogs_with_secondary(self, tmp_path, monkeypatch):
+        from auth import session_manager
+
+        db_file = str(tmp_path / "target.db")
+        conn = sqlite3.connect(db_file)
+        conn.executescript(
+            """
+            CREATE TABLE auth_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_type TEXT,
+                token_name TEXT,
+                token_value TEXT,
+                domain TEXT,
+                path TEXT DEFAULT '/',
+                is_active INTEGER DEFAULT 0,
+                role TEXT DEFAULT 'primary',
+                expires_at TEXT,
+                username TEXT,
+                password TEXT
+            );
+            CREATE TABLE auth_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_label TEXT,
+                username TEXT,
+                password TEXT,
+                login_url TEXT
+            );
+            CREATE TABLE scan_state (
+                id INTEGER PRIMARY KEY,
+                seed_url TEXT,
+                cdp_url TEXT
+            );
+            INSERT INTO auth_credentials (account_label, username, password, login_url)
+            VALUES ('secondary', 'u2', 'p2', 'https://login.example.edu');
+            INSERT INTO scan_state (id, seed_url, cdp_url)
+            VALUES (1, 'https://portal.example.edu', 'http://localhost:9222');
+            """
+        )
+        conn.close()
+
+        capture_calls = []
+        relogin_calls = []
+
+        monkeypatch.setattr(session_manager, "find_db", lambda target: db_file)
+        monkeypatch.setattr(session_manager.subprocess, "run", lambda *args, **kwargs: None)
+        monkeypatch.setattr(session_manager, "sessions_valid", lambda _conn, role="primary": False)
+        monkeypatch.setattr(
+            session_manager,
+            "try_cdp_capture",
+            lambda *args, **kwargs: capture_calls.append((args, kwargs)) or True,
+        )
+        monkeypatch.setattr(
+            session_manager,
+            "run_relogin",
+            lambda *args, **kwargs: relogin_calls.append((args, kwargs)) or True,
+        )
+
+        assert session_manager.ensure_session("目标", role="secondary")
+        assert capture_calls == []
+        assert relogin_calls == [(("目标", "https://login.example.edu", "u2", "p2"), {"role": "secondary"})]

@@ -68,6 +68,7 @@ def launch_chrome(port: int = 9222, burp_port: int = 8080) -> subprocess.Popen:
         "--no-default-browser-check",
         "--lang=zh-CN",
         "--window-position=1400,0",
+        "--remote-allow-origins=*",
     ]
     if is_burp_running(burp_port):
         cmd.append(f"--proxy-server=http://127.0.0.1:{burp_port}")

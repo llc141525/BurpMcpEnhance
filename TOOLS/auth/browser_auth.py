@@ -91,7 +91,7 @@ def write_surface_urls_to_db(db_path: str, urls: list[dict]) -> int:
     return count
 
 
-def write_cookies_to_db(db_path: str, cookies: list[dict]) -> None:
+def write_cookies_to_db(db_path: str, cookies: list[dict], role: str = "primary") -> None:
     """写 auth_sessions 表，包括 expires_at。"""
     from datetime import datetime, timezone
 
@@ -109,34 +109,40 @@ def write_cookies_to_db(db_path: str, cookies: list[dict]) -> None:
                 expires_at = None
         conn.execute(
             """INSERT INTO auth_sessions
-               (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source)
-               VALUES ('cookie', ?, ?, ?, ?, ?, 1, 'browser_use')
-               ON CONFLICT(token_name, domain) DO UPDATE SET
+               (token_type, token_name, token_value, domain, path, expires_at, is_active, cookie_source, role)
+               VALUES ('cookie', ?, ?, ?, ?, ?, 1, 'browser_use', ?)
+               ON CONFLICT(role, token_name, domain) DO UPDATE SET
                  token_value=excluded.token_value,
                  expires_at=excluded.expires_at,
                  is_active=1,
                  last_checked_at=datetime('now','localtime')""",
-            (c.get("name", ""), c.get("value", ""), c.get("domain", ""), c.get("path", "/"), expires_at),
+            (c.get("name", ""), c.get("value", ""), c.get("domain", ""), c.get("path", "/"), expires_at, role),
         )
     conn.commit()
     conn.close()
 
 
-def write_credentials_to_db(db_path: str, username: str, password: str, login_url: str = "") -> None:
+def write_credentials_to_db(
+    db_path: str,
+    username: str,
+    password: str,
+    login_url: str = "",
+    account_label: str = "primary",
+) -> None:
     """写 username/password 到 auth_credentials（供 session_manager 续期使用）。"""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     # 写 auth_credentials（含 login_url，session_manager 优先从这里取）
     conn.execute(
-        "INSERT INTO auth_credentials (account_label, username, password, login_url) VALUES ('primary', ?, ?, ?)",
-        (username, password, login_url),
+        "INSERT INTO auth_credentials (account_label, username, password, login_url) VALUES (?, ?, ?, ?)",
+        (account_label, username, password, login_url),
     )
     # 同时更新最近一条 is_active=1 的 cookie 行（向后兼容）
     conn.execute(
         "UPDATE auth_sessions SET username=?, password=? "
-        "WHERE id=(SELECT MAX(id) FROM auth_sessions WHERE is_active=1)",
-        (username, password),
+        "WHERE id=(SELECT MAX(id) FROM auth_sessions WHERE is_active=1 AND COALESCE(role, 'primary')=?)",
+        (username, password, account_label),
     )
     conn.commit()
     conn.close()
@@ -154,10 +160,10 @@ def find_db(target: str) -> str | None:
     return str(matches[0]) if matches else None
 
 
-def persist_cdp_auth_state(target: str, db_path: str, cdp_url: str) -> bool:
+def persist_cdp_auth_state(target: str, db_path: str, cdp_url: str, role: str = "primary") -> bool:
     """登录成功后统一捕获 cookies + storage token。"""
     try:
-        counts = capture_to_db(target, db_path, cdp_url)
+        counts = capture_to_db(target, db_path, cdp_url, role=role)
         print(
             f"[browser_auth] CDP auth state: cookies={counts.get('cookies', 0)} "
             f"storage_tokens={counts.get('storage_tokens', 0)}",
@@ -173,7 +179,13 @@ def persist_cdp_auth_state(target: str, db_path: str, cdp_url: str) -> bool:
 
 
 async def run_browser_auth(
-    target: str, login_url: str, cdp_url: str, db_path: str, username: str = "", password: str = ""
+    target: str,
+    login_url: str,
+    cdp_url: str,
+    db_path: str,
+    username: str = "",
+    password: str = "",
+    role: str = "primary",
 ) -> bool:
     """browser-use agent 登录 + surface discovery。成功返回 True，失败/超时返回 False。
 
@@ -275,7 +287,7 @@ async def run_browser_auth(
                 file=sys.stderr,
             )
 
-        persist_cdp_auth_state(target, db_path, cdp_url)
+        persist_cdp_auth_state(target, db_path, cdp_url, role=role)
 
         return True
 
@@ -293,6 +305,8 @@ def main() -> None:
     parser.add_argument("--url", required=True, help="登录页 URL")
     parser.add_argument("--username", default="", help="账号（可选，直接嵌入 task）")
     parser.add_argument("--password", default="", help="密码（可选，直接嵌入 task）")
+    parser.add_argument("--role", default="primary", choices=["primary", "secondary"], help="写入 auth_sessions 的账号角色")
+    parser.add_argument("--account-label", default=None, help="写入 auth_credentials 的账号标签，默认等于 --role")
     args = parser.parse_args()
 
     if not os.environ.get("DEEPSEEK_API"):
@@ -310,12 +324,15 @@ def main() -> None:
 
     TMP_DIR.mkdir(exist_ok=True)
 
-    success = asyncio.run(run_browser_auth(args.target, args.url, cdp_url, db_path, args.username, args.password))
+    account_label = args.account_label or args.role
+    success = asyncio.run(
+        run_browser_auth(args.target, args.url, cdp_url, db_path, args.username, args.password, role=args.role)
+    )
 
     if success:
         set_phase(db_path, "auth_ready")
         if args.username:
-            write_credentials_to_db(db_path, args.username, args.password, args.url)
+            write_credentials_to_db(db_path, args.username, args.password, args.url, account_label=account_label)
         print("[browser_auth] 登录成功，phase → auth_ready", file=sys.stderr)
     else:
         set_phase(db_path, "auth_timeout")

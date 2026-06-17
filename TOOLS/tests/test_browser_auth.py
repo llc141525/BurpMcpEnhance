@@ -71,6 +71,8 @@ CREATE TABLE auth_sessions (
     username TEXT DEFAULT NULL,
     password TEXT DEFAULT NULL
 );
+CREATE UNIQUE INDEX idx_auth_sessions_role_name_domain
+    ON auth_sessions(role, token_name, domain);
 CREATE TABLE auth_credentials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_label TEXT,
@@ -113,6 +115,36 @@ class TestWriteCredentialsToDb:
         assert sess[0] == "user123"
         assert sess[1] == "pass456"
 
+    def test_writes_secondary_credentials_and_updates_secondary_session(self, tmp_path):
+        db_file = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_file)
+        conn.executescript(
+            _AUTH_SESSIONS_DDL
+            + """
+            INSERT INTO auth_sessions
+              (token_type, token_name, token_value, domain, cookie_source, role)
+            VALUES
+              ('cookie', 'session', 'primary-value', 'example.com', 'browser_use', 'primary'),
+              ('cookie', 'session', 'secondary-value', 'example.com', 'browser_use', 'secondary');
+            """
+        )
+        conn.close()
+
+        from auth.browser_auth import write_credentials_to_db
+
+        write_credentials_to_db(db_file, "userB", "passB", account_label="secondary")
+
+        conn = sqlite3.connect(db_file)
+        cred = conn.execute(
+            "SELECT username, password FROM auth_credentials WHERE account_label='secondary'"
+        ).fetchone()
+        primary = conn.execute("SELECT username FROM auth_sessions WHERE role='primary'").fetchone()
+        secondary = conn.execute("SELECT username, password FROM auth_sessions WHERE role='secondary'").fetchone()
+        conn.close()
+        assert cred == ("userB", "passB")
+        assert primary[0] is None
+        assert secondary == ("userB", "passB")
+
     def test_writes_credentials_when_no_browser_use_row(self, tmp_path):
         """auth_credentials is always written; no is_active row means auth_sessions unchanged."""
         db_file = str(tmp_path / "test.db")
@@ -141,11 +173,25 @@ class TestPersistCdpAuthState:
 
         calls = []
 
-        def fake_capture(target, db_path, cdp_url):
-            calls.append((target, db_path, cdp_url))
+        def fake_capture(target, db_path, cdp_url, role="primary"):
+            calls.append((target, db_path, cdp_url, role))
             return {"cookies": 2, "storage_tokens": 1}
 
         monkeypatch.setattr(browser_auth, "capture_to_db", fake_capture, raising=False)
 
         assert browser_auth.persist_cdp_auth_state("目标", "db.sqlite", "http://localhost:9222")
-        assert calls == [("目标", "db.sqlite", "http://localhost:9222")]
+        assert calls == [("目标", "db.sqlite", "http://localhost:9222", "primary")]
+
+    def test_persist_cdp_auth_state_passes_role(self, monkeypatch):
+        from auth import browser_auth
+
+        calls = []
+
+        def fake_capture(target, db_path, cdp_url, role="primary"):
+            calls.append((target, db_path, cdp_url, role))
+            return {"cookies": 2, "storage_tokens": 1}
+
+        monkeypatch.setattr(browser_auth, "capture_to_db", fake_capture, raising=False)
+
+        assert browser_auth.persist_cdp_auth_state("目标", "db.sqlite", "http://localhost:9222", role="secondary")
+        assert calls == [("目标", "db.sqlite", "http://localhost:9222", "secondary")]

@@ -153,10 +153,24 @@ class TestGetAuthCookieHeader:
         conn.execute(
             "CREATE TABLE auth_sessions "
             "(id INTEGER PRIMARY KEY, token_name TEXT, token_value TEXT, domain TEXT, "
-            "path TEXT, is_active INTEGER, expires_at TEXT)"
+            "path TEXT, is_active INTEGER, role TEXT DEFAULT 'primary', expires_at TEXT)"
         )
         conn.commit()
         conn.close()
 
         result = get_auth_cookie_header(db_file, "example.com")
         assert result is None
+
+    def test_filters_by_role(self, mem_db, tmp_path):
+        mem_db.execute(
+            "INSERT INTO auth_sessions (token_name, token_value, domain, path, is_active, role) "
+            "VALUES ('tok', 'primary', 'example.com', '/', 1, 'primary')"
+        )
+        mem_db.execute(
+            "INSERT INTO auth_sessions (token_name, token_value, domain, path, is_active, role) "
+            "VALUES ('tok', 'secondary', 'example.com', '/', 1, 'secondary')"
+        )
+        mem_db.commit()
+
+        header = get_auth_cookie_header(_dump_db(mem_db, tmp_path), "example.com", role="secondary")
+        assert header == "tok=secondary"

@@ -234,6 +234,17 @@ python3 TOOLS/db_query.py --target "{目标名}" "SELECT * FROM pages WHERE url=
 
 构造最小 PoC → Burp 发送 → 对比基线 → 判定。
 
+**响应对比优先用 `diff_proxy_responses`**（只返回变化行，省 token）：
+
+```python
+# 发送基线请求，记录 burp_id_baseline
+# 发送 PoC 请求，记录 burp_id_poc
+diff = mcp__burp__diff_proxy_responses(id1=burp_id_baseline, id2=burp_id_poc)
+# 只读 diff 判断是否漏洞特征，不读全文
+```
+
+IDOR 测试：A 账号请求 id1，B 账号请求 id2，diff 有数据差异即为越权。
+
 ### Step 3 — 结果判定
 
 | 判断 | 操作 |

@@ -196,35 +196,15 @@ def main() -> None:
 
     print_summary(results)
 
-    # ── auth 检测：触发 browser_auth ──────────────────────────────────
+    # ── auth 检测：设置 auth_pending，由 run_scan.py 展示 AUTH_BARRIER ──
     if auth_targets and args.target:
         db_path_str = str(find_db(args.target))
         conn2 = sqlite3.connect(db_path_str)
         conn2.execute("UPDATE scan_state SET phase='auth_pending' WHERE id=1")
         conn2.commit()
         conn2.close()
-
         login_url = auth_targets[0]["url"]
-        print(f"\n[auth] 检测到认证壁垒，启动 browser_auth: {login_url}")
-
-        subprocess.run(  # noqa: S603
-            [sys.executable, str(Path(__file__).parent / "chrome_manager.py"), "--target", args.target],
-            timeout=20,
-            check=False,
-        )
-
-        subprocess.run(  # noqa: S603
-            [
-                sys.executable,
-                str(Path(__file__).parent / "browser_auth.py"),
-                "--target",
-                args.target,
-                "--url",
-                login_url,
-            ],
-            timeout=360,
-            check=False,
-        )
+        print(f"\n[auth] 检测到认证壁垒: {login_url}，phase → auth_pending，等待操作员手动登录")
     # ─────────────────────────────────────────────────────────────────
 
 

@@ -1,0 +1,17 @@
+[mcp_servers.MiniMax]
+command = "uvx"
+args = [
+    "minimax-coding-plan-mcp",
+    "-y",
+]
+
+[mcp_servers.MiniMax.env]
+MINIMAX_API_KEY = "sk-cp-ECfFbjNgBCOjnL2I4IQuiLGbx5Ix6FJwp0KQgEdXQjsvVG1WqVyCnuP0pVez5SEf-J2QTWUxxYnXO518zo0hbIyXgmWn57VMWeZOXyzIeT9_I0kO-x5rsDQ"
+MINIMAX_API_HOST = "https://api.minimaxi.com"
+
+[mcp_servers.burp]
+url = "http://127.0.0.1:9876/mcp"
+
+[mcp_servers.scrapling]
+command = 'E:\SRC挖掘\SRC\.venv\Scripts\scrapling.exe'
+args = ["mcp"]

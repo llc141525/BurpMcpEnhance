@@ -198,7 +198,7 @@ python3 TOOLS/db_query.py --target "{目标名}" \
 mcp__burp__get_proxy_http_detail(ids="<burp_request_id>")
 ```
 
-burp_request_id 为空时，从 url/method/param/payload 重构请求，并用 `mcp__burp__get_proxy_http_history_regex` 搜索真实请求补全请求头。
+burp_request_id 为空时，从 url/method/param/payload 重构请求；用 `mcp__burp__list_proxy_http_history(count=20, offset=0)` 分页搜索，按 URL/method 匹配找到历史请求补全请求头。
 
 ## Phase 2 — 写报告
 

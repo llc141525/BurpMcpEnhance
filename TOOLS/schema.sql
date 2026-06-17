@@ -77,8 +77,15 @@ CREATE TABLE IF NOT EXISTS suspicious_points (
     test_status TEXT DEFAULT 'untested',
     burp_request_id INTEGER,
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
-    notes TEXT
+    notes TEXT,
+    endpoint_fingerprint TEXT,
+    response_summary TEXT,
+    risk_score INTEGER DEFAULT 0
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_suspicious_points_auth_fingerprint
+    ON suspicious_points(source, endpoint_fingerprint, test_type)
+    WHERE endpoint_fingerprint IS NOT NULL;
 
 -- 6. findings 表（确认漏洞）
 CREATE TABLE IF NOT EXISTS findings (
@@ -127,7 +134,9 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     domain TEXT,
     path TEXT DEFAULT '/',
     is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    username TEXT DEFAULT NULL,
+    password TEXT DEFAULT NULL
 );
 
 -- 8. schema_version 表（DB 迁移版本追踪）

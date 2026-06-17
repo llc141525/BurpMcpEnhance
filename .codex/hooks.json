@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python 'E:\\SRC挖掘\\SRC\\.codex\\hooks\\check-bash-command.py'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python E:/SRC挖掘/SRC/TOOLS/ad-hoc/session-summary.py"
+          }
+        ]
+      }
+    ]
+  }
+}

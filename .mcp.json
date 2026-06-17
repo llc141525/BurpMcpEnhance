@@ -8,17 +8,6 @@
 				"no_proxy": "127.0.0.1,localhost"
 			}
 		},
-		"MiniMax": {
-			"command": "uvx",
-			"args": [
-				"minimax-coding-plan-mcp",
-				"-y"
-			],
-			"env": {
-				"MINIMAX_API_KEY": "sk-cp-ECfFbjNgBCOjnL2I4IQuiLGbx5Ix6FJwp0KQgEdXQjsvVG1WqVyCnuP0pVez5SEf-J2QTWUxxYnXO518zo0hbIyXgmWn57VMWeZOXyzIeT9_I0kO-x5rsDQ",
-				"MINIMAX_API_HOST": "https://api.minimaxi.com"
-			}
-		},
 		"scrapling": {
 			"command": "E:\\SRC挖掘\\SRC\\.venv\\Scripts\\scrapling.exe",
 			"args": [

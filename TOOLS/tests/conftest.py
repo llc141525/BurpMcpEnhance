@@ -27,6 +27,7 @@ def mem_db():
             domain TEXT,
             path TEXT DEFAULT '/',
             is_active INTEGER DEFAULT 1,
+            role TEXT DEFAULT 'primary',
             cookie_source TEXT,
             expires_at TEXT
         );

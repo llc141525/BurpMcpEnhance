@@ -1,4 +1,4 @@
-from utils.compare import compare_batch_idor, compare_unauth, compare_vertical_priv_esc
+from utils.compare import compare_batch_idor, compare_boundary_value, compare_unauth, compare_vertical_priv_esc
 
 
 class TestCompareUnauth:
@@ -165,3 +165,60 @@ class TestCompareBatchIdor:
         )
         assert verdict == "low_confidence"
         assert "body too short" in evidence
+
+
+class TestCompareBoundaryValue:
+    def test_negative_price_accepted_with_success_signal_is_confirmed(self):
+        verdict, evidence = compare_boundary_value(
+            200,
+            '{"code":0,"data":{"order_id":999}}',  # baseline: normal price
+            200,
+            '{"code":0,"data":{"order_id":1000}}',  # boundary: price=-1 accepted
+            "price",
+        )
+        assert verdict == "confirmed"
+        assert "price" in evidence
+
+    def test_boundary_rejected_400_is_false_positive(self):
+        verdict, evidence = compare_boundary_value(
+            200,
+            '{"code":0,"data":{"order_id":999}}',
+            400,
+            '{"code":400,"message":"参数错误"}',
+            "amount",
+        )
+        assert verdict == "false_positive"
+        assert "400" in evidence
+
+    def test_boundary_rejected_in_body_error_is_false_positive(self):
+        """b=200 but error keyword in body means server caught the invalid value."""
+        verdict, evidence = compare_boundary_value(
+            200,
+            '{"code":0,"data":{"qty":5}}',
+            200,
+            '{"code":-1,"message":"数量不能为负数"}',
+            "quantity",
+        )
+        assert verdict == "false_positive"
+
+    def test_boundary_200_no_success_or_fail_signal_is_low_confidence(self):
+        verdict, evidence = compare_boundary_value(
+            200,
+            '{"code":0,"data":{"balance":100}}',
+            200,
+            '{"msg":"ok"}',  # no code:0 / "success" keyword
+            "credit",
+        )
+        assert verdict == "low_confidence"
+
+    def test_baseline_fail_is_false_positive(self):
+        """If baseline returns non-200, the endpoint isn't valid to test."""
+        verdict, evidence = compare_boundary_value(
+            404,
+            "",
+            200,
+            '{"code":0}',
+            "price",
+        )
+        assert verdict == "false_positive"
+        assert "baseline" in evidence

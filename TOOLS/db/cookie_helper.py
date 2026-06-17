@@ -50,13 +50,21 @@ def _is_expired(expires_at: str | None) -> bool:
         return False
 
 
-def get_auth_cookies_dict(db_path: str, domain: str, request_path: str = "/") -> dict[str, str]:
+def get_auth_cookies_dict(
+    db_path: str,
+    domain: str,
+    request_path: str = "/",
+    role: str = "primary",
+) -> dict[str, str]:
     """返回匹配 domain + path 且未过期的活跃 cookies {name: value}，无匹配返回空 dict。"""
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT token_name, token_value, domain, path, expires_at FROM auth_sessions WHERE is_active=1"
+            """SELECT token_name, token_value, domain, path, expires_at
+               FROM auth_sessions
+               WHERE is_active=1 AND COALESCE(role, 'primary')=?""",
+            (role,),
         ).fetchall()
         conn.close()
     except Exception as e:  # noqa: BLE001
@@ -78,9 +86,14 @@ def get_auth_cookies_dict(db_path: str, domain: str, request_path: str = "/") ->
     return result
 
 
-def get_auth_cookie_header(db_path: str, domain: str, request_path: str = "/") -> str | None:
+def get_auth_cookie_header(
+    db_path: str,
+    domain: str,
+    request_path: str = "/",
+    role: str = "primary",
+) -> str | None:
     """返回 'name1=val1; name2=val2' 格式字符串，无匹配返回 None。"""
-    d = get_auth_cookies_dict(db_path, domain, request_path)
+    d = get_auth_cookies_dict(db_path, domain, request_path, role=role)
     if not d:
         return None
     return "; ".join(f"{k}={v}" for k, v in d.items())
