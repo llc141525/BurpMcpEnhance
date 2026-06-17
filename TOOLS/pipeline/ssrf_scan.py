@@ -221,6 +221,21 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--delay", type=float, default=1.0)
     parser.add_argument("--max-rotations", type=int, default=3, dest="max_rotations")
+    parser.add_argument(
+        "--collaborator-url",
+        default=None,
+        dest="collaborator_url",
+        help="Burp Collaborator payload URL for OOB/blind SSRF detection "
+        "(e.g. http://abc123.burpcollaborator.net/). "
+        "Generate via generate_collaborator_payload MCP tool before calling this script.",
+    )
+    parser.add_argument(
+        "--collaborator-payload-id",
+        default=None,
+        dest="collaborator_payload_id",
+        help="Collaborator payload ID (returned by generate_collaborator_payload). "
+        "Printed in output so the AI knows which ID to poll with get_collaborator_interactions.",
+    )
     args = parser.parse_args()
 
     db_path = find_db(args.target)
@@ -236,6 +251,17 @@ def main() -> None:
     target_row = conn.execute("SELECT id FROM targets LIMIT 1").fetchone()
     target_id: int = target_row["id"] if target_row else 1
 
+    probe_targets = list(INTERNAL_TARGETS)
+    if args.collaborator_url:
+        probe_targets.append(args.collaborator_url)
+        print("[ssrf_scan] OOB mode: Collaborator URL added to probe targets")
+        if args.collaborator_payload_id:
+            print(f"[ssrf_scan] Collaborator payload ID: {args.collaborator_payload_id}")
+            print(
+                f"[ssrf_scan] After scan, AI must call: "
+                f"get_collaborator_interactions(payloadId='{args.collaborator_payload_id}')"
+            )
+
     cookie = get_auth_cookie_header(str(db_path), seed_url, role="primary")
     candidates = find_ssrf_candidates(conn)
     print(f"[ssrf_scan] 候选: {len(candidates)} 个  delay={args.delay}s")
@@ -245,7 +271,7 @@ def main() -> None:
     probed = 0
 
     for cand in candidates:
-        for payload in INTERNAL_TARGETS:
+        for payload in probe_targets:
             status, body = probe_ssrf(cand["url"], cand["param"], payload, cookie, fetcher, args.delay)
             probed += 1
             if is_ssrf_response(status, body):

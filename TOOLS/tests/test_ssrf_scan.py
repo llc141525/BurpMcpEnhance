@@ -130,3 +130,130 @@ def test_write_ssrf_candidate_deduplicates(conn):
     inserted2 = write_ssrf_candidate(conn, target_id, "https://example.com/api?url=x", "url", "evidence2", "High")
     assert inserted2 is False
     assert conn.execute("SELECT count(*) FROM hunt_queue").fetchone()[0] == 1
+
+
+class TestCollaboratorArgs:
+    """Tests for Burp Collaborator OOB SSRF support."""
+
+    def _make_db(self, tmp_path):
+        db = tmp_path / "test.db"
+        c = sqlite3.connect(str(db))
+        c.executescript("""
+            CREATE TABLE pages (
+                id INTEGER PRIMARY KEY, url TEXT, status TEXT,
+                suspicious_params_json TEXT
+            );
+            CREATE TABLE scan_state (id INTEGER, seed_url TEXT);
+            CREATE TABLE targets (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE hunt_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id INTEGER, method TEXT, url TEXT, query_string TEXT,
+                endpoint_type TEXT, business_intent TEXT, risk_hint TEXT,
+                status TEXT, source TEXT, notes TEXT
+            );
+            CREATE TABLE auth_sessions (
+                id INTEGER PRIMARY KEY, target_id INTEGER, seed_url TEXT,
+                role TEXT, cookie_header TEXT, created_at INTEGER
+            );
+            INSERT INTO scan_state VALUES (1, 'https://example.com');
+            INSERT INTO targets VALUES (1, 'test');
+        """)
+        c.commit()
+        c.close()
+        return db
+
+    def test_collaborator_url_added_to_probe_targets(self, tmp_path):
+        """When --collaborator-url is given, it should be probed alongside internal targets."""
+        from unittest.mock import patch
+
+        from pipeline.ssrf_scan import main
+
+        db = self._make_db(tmp_path)
+        c = sqlite3.connect(str(db))
+        c.execute("INSERT INTO pages VALUES (1, 'https://example.com/api?url=http://x.com', 'visited', NULL)")
+        c.commit()
+        c.close()
+
+        probed_payloads = []
+
+        def fake_probe(url, param, payload, cookie, fetcher, delay):
+            probed_payloads.append(payload)
+            return 0, ""
+
+        with (
+            patch("pipeline.ssrf_scan.find_db", return_value=db),
+            patch("pipeline.ssrf_scan.probe_ssrf", side_effect=fake_probe),
+            patch("pipeline.ssrf_scan.get_auth_cookie_header", return_value=None),
+            patch(
+                "sys.argv",
+                ["ssrf_scan.py", "--target", "test", "--collaborator-url", "http://abc123.burpcollaborator.net/"],
+            ),
+        ):
+            main()
+
+        assert "http://abc123.burpcollaborator.net/" in probed_payloads, (
+            f"Collaborator URL should be in probed payloads. Got: {probed_payloads}"
+        )
+
+    def test_collaborator_payload_id_printed(self, tmp_path, capsys):
+        """When --collaborator-payload-id is given, it should be printed for AI to use."""
+        from unittest.mock import patch
+
+        from pipeline.ssrf_scan import main
+
+        db = self._make_db(tmp_path)
+
+        with (
+            patch("pipeline.ssrf_scan.find_db", return_value=db),
+            patch("pipeline.ssrf_scan.get_auth_cookie_header", return_value=None),
+            patch(
+                "sys.argv",
+                [
+                    "ssrf_scan.py",
+                    "--target",
+                    "test",
+                    "--collaborator-url",
+                    "http://abc123.burpcollaborator.net/",
+                    "--collaborator-payload-id",
+                    "abc123",
+                ],
+            ),
+        ):
+            main()
+
+        out = capsys.readouterr().out
+        assert "abc123" in out, f"Payload ID should appear in output. Got: {out}"
+        assert "get_collaborator_interactions" in out, (
+            f"Output should remind AI to call get_collaborator_interactions. Got: {out}"
+        )
+
+    def test_no_collaborator_url_means_internal_targets_only(self, tmp_path):
+        """Without --collaborator-url, only INTERNAL_TARGETS are probed (no regression)."""
+        from unittest.mock import patch
+
+        from pipeline.ssrf_scan import main
+
+        db = self._make_db(tmp_path)
+        c = sqlite3.connect(str(db))
+        c.execute("INSERT INTO pages VALUES (1, 'https://example.com/api?url=http://x.com', 'visited', NULL)")
+        c.commit()
+        c.close()
+
+        probed_payloads = []
+
+        def fake_probe(url, param, payload, cookie, fetcher, delay):
+            probed_payloads.append(payload)
+            return 0, ""
+
+        with (
+            patch("pipeline.ssrf_scan.find_db", return_value=db),
+            patch("pipeline.ssrf_scan.probe_ssrf", side_effect=fake_probe),
+            patch("pipeline.ssrf_scan.get_auth_cookie_header", return_value=None),
+            patch("sys.argv", ["ssrf_scan.py", "--target", "test"]),
+        ):
+            main()
+
+        for p in probed_payloads:
+            assert "burpcollaborator" not in p, (
+                f"Without --collaborator-url, no Collaborator URL should be probed. Got: {p}"
+            )
