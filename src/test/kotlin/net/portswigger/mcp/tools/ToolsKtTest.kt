@@ -884,6 +884,38 @@ class ToolsKtTest {
     }
     
     @Nested
+    inner class MergedHistoryToolsTests {
+        @Test
+        fun `get_proxy_http_history_regex tool name should no longer exist`() {
+            runBlocking {
+                val tools = client.listTools()
+                assertFalse(tools.any { it.name == "get_proxy_http_history_regex" },
+                    "Merged tool should not expose old regex variant name")
+                assertFalse(tools.any { it.name == "get_proxy_websocket_history_regex" },
+                    "Merged tool should not expose old regex variant name")
+            }
+        }
+
+        @Test
+        fun `get_proxy_http_history with regex param should filter results`() {
+            val proxy = mockk<Proxy>()
+            every { api.proxy() } returns proxy
+            every { proxy.history(any()) } returns listOf()
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history", mapOf(
+                        "regex" to "GET",
+                        "count" to 5,
+                        "offset" to 0
+                    )
+                )
+                assertNotNull(result)
+            }
+        }
+    }
+
+    @Nested
     inner class CollaboratorToolsTests {
         private val collaborator = mockk<Collaborator>()
         private val collaboratorClient = mockk<CollaboratorClient>()
