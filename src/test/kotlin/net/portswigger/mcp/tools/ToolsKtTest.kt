@@ -1482,6 +1482,109 @@ class ToolsKtTest {
         }
     }
 
+    @Nested
+    inner class ScopeToolsTests {
+        @BeforeEach
+        fun setupScope() {
+            runBlocking {
+                if (!client.isConnected()) client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @Test
+        fun `scope tools should be registered`() {
+            runBlocking {
+                val names = client.listTools().map { it.name }
+                assertTrue(names.contains("manage_scope"), "manage_scope missing: $names")
+                assertTrue(names.contains("get_site_map"), "get_site_map missing: $names")
+            }
+        }
+
+        @Test
+        fun `manage_scope add should call includeInScope`() {
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.includeInScope(any<String>()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "manage_scope", mapOf("action" to "add", "url" to "https://example.com")
+                )
+                delay(100)
+                result.expectTextContent("Added to scope: https://example.com")
+            }
+            verify(exactly = 1) { scope.includeInScope("https://example.com") }
+        }
+
+        @Test
+        fun `manage_scope remove should call excludeFromScope`() {
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.excludeFromScope(any<String>()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "manage_scope", mapOf("action" to "remove", "url" to "https://example.com")
+                )
+                delay(100)
+                result.expectTextContent("Removed from scope: https://example.com")
+            }
+            verify(exactly = 1) { scope.excludeFromScope("https://example.com") }
+        }
+
+        @Test
+        fun `manage_scope check should return in-scope status`() {
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.isInScope("https://example.com") } returns true
+            every { scope.isInScope("https://other.com") } returns false
+
+            runBlocking {
+                val r1 = client.callTool("manage_scope", mapOf("action" to "check", "url" to "https://example.com"))
+                delay(100)
+                assertTrue(r1.expectTextContent().contains("In scope"))
+
+                val r2 = client.callTool("manage_scope", mapOf("action" to "check", "url" to "https://other.com"))
+                delay(100)
+                assertTrue(r2.expectTextContent().contains("NOT in scope"))
+            }
+        }
+
+        @Test
+        fun `manage_scope invalid action should return error`() {
+            runBlocking {
+                val result = client.callTool("manage_scope", mapOf("action" to "hack", "url" to "https://x.com"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Invalid action"))
+            }
+        }
+
+        @Test
+        fun `get_site_map should return site map entries`() {
+            val siteMap = mockk<burp.api.montoya.sitemap.SiteMap>()
+            val rr = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            val req = mockk<burp.api.montoya.http.message.requests.HttpRequest>()
+            val resp = mockk<burp.api.montoya.http.message.responses.HttpResponse>()
+
+            every { api.siteMap() } returns siteMap
+            every { siteMap.requestResponses() } returns listOf(rr)
+            every { rr.request() } returns req
+            every { rr.response() } returns resp
+            every { req.method() } returns "GET"
+            every { req.url() } returns "https://example.com/api/users"
+            every { resp.statusCode() } returns 200
+
+            runBlocking {
+                val result = client.callTool("get_site_map", mapOf("count" to 10, "offset" to 0))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("GET"))
+                assertTrue(text.contains("https://example.com/api/users"))
+                assertTrue(text.contains("200"))
+            }
+        }
+    }
+
     @Test
     fun `edition specific tools should only register in professional edition`() {
         val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()

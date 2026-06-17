@@ -62,6 +62,7 @@ fun Server.registerTools(
     if (database != null && exporter != null) {
         registerExporterTools(database, exporter)
     }
+    registerScopeTools(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {
