@@ -1483,6 +1483,86 @@ class ToolsKtTest {
     }
 
     @Nested
+    inner class DiffToolsTests {
+        @BeforeEach
+        fun setup() {
+            runBlocking {
+                if (!client.isConnected()) client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses should be registered`() {
+            runBlocking {
+                assertTrue(client.listTools().any { it.name == "diff_proxy_responses" })
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses identical responses should report identical`() {
+            val db = serverManager.database ?: fail("Database required")
+            db.upsertProxyHttpHistory(listOf(
+                ProxyHttpEntry(
+                    201, "GET", 200, "http://example.com/diff-a",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "{\"user\":\"alice\"}",
+                    null, null, System.currentTimeMillis()
+                ),
+                ProxyHttpEntry(
+                    202, "GET", 200, "http://example.com/diff-a",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "{\"user\":\"alice\"}",
+                    null, null, System.currentTimeMillis()
+                )
+            ))
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "201", "id2" to "202"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("identical"))
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses different responses should show diff`() {
+            val db = serverManager.database ?: fail("Database required")
+            db.upsertProxyHttpHistory(listOf(
+                ProxyHttpEntry(
+                    203, "GET", 200, "http://example.com/diff-b",
+                    null, null,
+                    "HTTP/1.1 200 OK",
+                    "{\"role\":\"admin\"}",
+                    null, null, System.currentTimeMillis()
+                ),
+                ProxyHttpEntry(
+                    204, "GET", 200, "http://example.com/diff-b",
+                    null, null,
+                    "HTTP/1.1 200 OK",
+                    "{\"role\":\"user\"}",
+                    null, null, System.currentTimeMillis()
+                )
+            ))
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "203", "id2" to "204"))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("admin") || text.contains("user") || text.contains("REMOVED") || text.contains("ADDED"),
+                    "Diff should show what changed: $text")
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses invalid id should return error`() {
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "notanumber", "id2" to "999"))
+                delay(100)
+                assertTrue(result.expectTextContent().contains("Invalid ID"))
+            }
+        }
+    }
+
+    @Nested
     inner class ScopeToolsTests {
         @BeforeEach
         fun setupScope() {

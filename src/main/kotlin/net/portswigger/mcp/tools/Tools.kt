@@ -61,6 +61,7 @@ fun Server.registerTools(
     // Register exporter/two-tier query tools if infrastructure is available
     if (database != null && exporter != null) {
         registerExporterTools(database, exporter)
+        registerDiffTools(database)
     }
     registerScopeTools(api, config)
 
