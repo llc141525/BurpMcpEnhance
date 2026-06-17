@@ -277,12 +277,55 @@ def handle_api_fuzz(target: str, db_path: Path, conn: sqlite3.Connection) -> Non
         after_hq = conn.execute(_HQ_QUERY).fetchone()[0]
     except sqlite3.OperationalError:
         after_hq = 0
+    set_phase(conn, "vuln_scan")
+    print_tag(
+        "PHASE_TRANSITION",
+        [
+            f"api_fuzz → vuln_scan    新增 hunt_queue 条目: {after_hq - before_hq}",
+            "[run_scan] api_fuzz 完成，切换到 vuln_scan",
+        ],
+    )
+
+
+def handle_vuln_scan(target: str, db_path: Path, conn: sqlite3.Connection) -> None:
+    """phase=vuln_scan: SSRF候选 + 文件上传 + 存储型XSS 三项专项扫描。"""
+    print("[run_scan] phase=vuln_scan → 运行 ssrf_scan / upload_scan / xss_scan ...")
+
+    def _count_sp(source: str) -> int:
+        try:
+            return conn.execute("SELECT count(*) FROM suspicious_points WHERE source=?", (source,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
+    def _count_hq(etype: str) -> int:
+        try:
+            return conn.execute("SELECT count(*) FROM hunt_queue WHERE endpoint_type=?", (etype,)).fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0
+
+    before_ssrf = _count_hq("ssrf_candidate")
+    before_upload = _count_sp("upload_scan")
+    before_xss = _count_sp("xss_scan")
+
+    for script in ("ssrf_scan.py", "upload_scan.py", "xss_scan.py"):
+        subprocess.run(  # noqa: S603
+            [PYTHON, str(PIPELINE_DIR / script), "--target", target],
+            timeout=600,
+            check=False,
+        )
+
+    after_ssrf = _count_hq("ssrf_candidate")
+    after_upload = _count_sp("upload_scan")
+    after_xss = _count_sp("xss_scan")
+
     set_phase(conn, "exploit")
     print_tag(
         "PHASE_TRANSITION",
         [
-            f"api_fuzz → exploit    新增 hunt_queue 条目: {after_hq - before_hq}",
-            "[run_scan] api_fuzz 完成，切换到 exploit",
+            "vuln_scan → exploit",
+            f"  SSRF 候选: {after_ssrf - before_ssrf} 条写入 hunt_queue",
+            f"  文件上传: {after_upload - before_upload} 条写入 suspicious_points",
+            f"  存储型XSS: {after_xss - before_xss} 条写入 suspicious_points",
         ],
     )
 
@@ -465,6 +508,7 @@ HANDLERS = {
     "spider": handle_spider,
     "probe": handle_probe,
     "api_fuzz": handle_api_fuzz,
+    "vuln_scan": handle_vuln_scan,
     "exploit": handle_exploit,
     "brute": handle_brute,
     "reflect": handle_reflect,

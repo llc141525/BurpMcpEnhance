@@ -253,3 +253,12 @@ class TestNeedsRelogin:
 class TestExploitNextPhase:
     def test_always_returns_brute(self):
         assert exploit_next_phase() == "brute"
+
+
+# ── HANDLERS ──────────────────────────────────────────────────────────────────
+
+
+def test_handlers_contains_vuln_scan():
+    from run_scan import HANDLERS
+
+    assert "vuln_scan" in HANDLERS

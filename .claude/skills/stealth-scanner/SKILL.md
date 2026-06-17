@@ -50,7 +50,7 @@ python3 TOOLS/db/db_query.py --target "{目标}" --check
 
 ## 状态机
 
-phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spider` ↔ `probe` → `api_fuzz` → `exploit` → `brute` → `spider`
+phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spider` ↔ `probe` → `api_fuzz` → `vuln_scan` → `exploit` → `brute` → `spider`
 
 | phase            | 含义                      | 由 run_scan.py 调用的脚本                      |
 | ---------------- | ------------------------- | ---------------------------------------------- |
@@ -61,6 +61,7 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `spider`       | BFS 爬取 + JS 两层分析    | `pipeline/bfs_crawl.py` + `js_analyzer.py` |
 | `probe`        | 参数 fuzz + nuclei 探测   | `pipeline/probe_runner.py`                   |
 | `api_fuzz`     | API 命名空间爆破：词列+模式推断探测隐藏 admin/teacher API → 写 `hunt_queue` | `pipeline/api_fuzz.py` |
+| `vuln_scan`    | SSRF候选发现 + 文件上传测试 + 存储型XSS beacon注入 → suspicious_points/hunt_queue | `ssrf_scan.py` + `upload_scan.py` + `xss_scan.py` | `exploit` |
 | `exploit`      | 框架专项 CVE 攻击链 + SQLi 扫描 | `pipeline/framework_exploit.py` + `pipeline/sqli_scan.py` |
 | `brute`        | 目录爆破                  | `pipeline/brutescan.py`                      |
 | `auth_timeout` | 登录超时，等待操作员重试  | —                                             |
@@ -79,6 +80,9 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 | `[AUTH_BARRIER]`          | 发现认证壁垒或登录超时               | 告知操作员（见"登录流程"一节），等待恢复                     |
 | `[UNKNOWN_FRAMEWORK]`     | exploit 阶段检测到未知框架，不在 FRAMEWORK_KB 中 | 用内置 WebSearch 查 CVE："框架名 CVE RCE 漏洞 2024 2025"，结果手动写 SP |
 | `[API_FUZZ]`              | `probed={n} found={m} waf_rotations={k}`  hidden admin/teacher API 探测摘要 | 读摘要 → found>0 则评估风险；再次调用 `run_scan.py` |
+| `[SSRF_SCAN]`             | `candidates={n} probed={m} found={k}` — SSRF 候选探测摘要 | 读摘要 → found>0 则按 OOB 验证流程确认；再次调用 `run_scan.py` |
+| `[UPLOAD_SCAN]`           | `targets={n} tested={m} found={k}` — 文件上传利用摘要 | 读摘要 → found>0 则转 vuln-review 验证；再次调用 `run_scan.py` |
+| `[XSS_SCAN]`              | `targets={n} tested={m} found_stored={k} found_reflected={j}` — XSS 检测摘要 | 读摘要 → found_stored>0 优先转 vuln-review；再次调用 `run_scan.py` |
 
 ### [NEW_SUSPICIOUS_POINTS] 处理细则
 
@@ -86,6 +90,18 @@ phases: `init` → `auth_pending` → `auth_ready` → `auth_explore` → `spide
 
 - `risk=High/Critical` 且 `test_type` 含 `idor/auth/sqli` → 立即通知操作员并转 vuln-review
 - 其余 → 记录后再次调用 `run_scan.py` 继续
+
+### vuln_scan 阶段后：Collaborator OOB SSRF 验证
+
+`vuln_scan` 完成后，Claude Code 直接执行以下步骤对 hunt_queue 中的 SSRF 候选做 OOB 确认：
+
+1. 查询候选：`SELECT id, url, notes FROM hunt_queue WHERE endpoint_type='ssrf_candidate' AND status='queued' LIMIT 10`
+2. 对每条候选：
+   a. 调用 `mcp__burp__generate_collaborator_payload` 生成 OOB payload URL
+   b. 调用 `mcp__burp__send_http1_request` 注入 payload（替换 notes 中记录的 param）
+   c. 等待 3s，调用 `mcp__burp__get_collaborator_interactions(payloadId=...)` 查询 DNS/HTTP 回显
+   d. 有回显 → `UPDATE hunt_queue SET status='confirmed', notes=notes||' OOB_HIT' WHERE id=?`
+   e. 无回显 → `UPDATE hunt_queue SET status='tested' WHERE id=?`
 
 ## 登录流程
 
