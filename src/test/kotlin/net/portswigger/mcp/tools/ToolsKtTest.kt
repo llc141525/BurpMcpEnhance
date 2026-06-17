@@ -1834,4 +1834,35 @@ class ToolsKtTest {
             assertTrue(tools.any { it.name == "get_collaborator_interactions" })
         }
     }
+
+    @Nested
+    inner class GetBurpInfoTests {
+        @BeforeEach
+        fun setup() {
+            runBlocking {
+                if (!client.isConnected()) client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @Test
+        fun `get_burp_info should be registered`() {
+            runBlocking {
+                val names = client.listTools().map { it.name }
+                assertTrue(names.contains("get_burp_info"), "get_burp_info missing from tool list")
+            }
+        }
+
+        @Test
+        fun `get_burp_info should return edition and capability summary`() {
+            runBlocking {
+                val result = client.callTool("get_burp_info", emptyMap<String, Any>())
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Edition") || text.contains("edition") || text.contains("COMMUNITY") || text.contains("PROFESSIONAL"),
+                    "Should include edition: $text")
+                assertTrue(text.contains("graphql") || text.contains("diff") || text.contains("scope"),
+                    "Should list available tool categories: $text")
+            }
+        }
+    }
 }
