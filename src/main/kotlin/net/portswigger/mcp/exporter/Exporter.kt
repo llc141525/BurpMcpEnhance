@@ -5,16 +5,39 @@ import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
 import burp.api.montoya.scanner.audit.issues.AuditIssue
 import kotlinx.coroutines.*
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_BALANCED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_OFF
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_RELAXED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_STRICT
+import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.db.Database
 import net.portswigger.mcp.db.ProxyHttpEntry
 import net.portswigger.mcp.db.ScannerIssueEntry
 import net.portswigger.mcp.logging.LogWriter
+import java.net.URI
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+
+private val STATIC_ASSET_EXTENSIONS = setOf(
+    ".js", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".ico", ".woff", ".woff2", ".ttf", ".eot", ".webp", ".mp4", ".mp3", ".txt"
+)
+
+private val LOW_VALUE_BROWSER_PATH_SUFFIXES = setOf(
+    "/favicon.ico", "/robots.txt", "/manifest.json", "/site.webmanifest",
+    "/browserconfig.xml", "/sw.js", "/service-worker.js"
+)
+
+private val LOW_VALUE_BROWSER_PATH_FRAGMENTS = setOf(
+    "/apple-touch-icon", "/android-chrome-", "/mstile-", "/@vite/client",
+    "/__vite_ping", "/__webpack_hmr", "/sockjs-node", "hot-update.", "webpack-hmr"
+)
 
 class Exporter(
     private val api: MontoyaApi,
     private val database: Database,
+    private val config: McpConfig? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val pollIntervalMs: Long = 30_000,
     private val maxBodySize: Int = 8192
@@ -79,6 +102,12 @@ class Exporter(
         scope.cancel()
     }
 
+    fun noiseModeSummary(): String {
+        val mode = config?.exportNoiseMode ?: EXPORT_NOISE_MODE_BALANCED
+        val inScopeOnly = config?.exportInScopeOnly == true
+        return "mode=$mode, in_scope_only=$inScopeOnly"
+    }
+
     internal suspend fun exportProxyHttpHistory() {
         withContext(Dispatchers.IO) {
             val history = api.proxy().history()
@@ -90,9 +119,12 @@ class Exporter(
 
             if (newEntries.isEmpty()) return@withContext
 
-            val entries = newEntries.mapNotNull { it.toProxyHttpEntry(maxBodySize) }
+            val entries = newEntries
+                .filter { shouldExport(it) }
+                .mapNotNull { it.toProxyHttpEntry(maxBodySize) }
             if (entries.isNotEmpty()) {
-                database.upsertProxyHttpHistory(entries)
+                val maxRaw = if (config?.saveRawDuplicates != false) config?.maxRawDuplicatesPerCanonical ?: 10 else 0
+                database.upsertProxyHttpHistory(entries, maxRawDuplicatesPerCanonical = maxRaw)
                 _totalExported.addAndGet(entries.size)
             }
 
@@ -118,6 +150,22 @@ class Exporter(
                 _totalExported.addAndGet(entries.size)
             }
         }
+    }
+
+    private fun shouldExport(entry: ProxyHttpRequestResponse): Boolean {
+        val request = runCatching { entry.request() }.getOrNull() ?: return false
+        val url = buildUrl(request) ?: return false
+
+        if (config?.exportInScopeOnly == true && !api.scope().isInScope(url)) {
+            return false
+        }
+
+        val noiseMode = config?.exportNoiseMode ?: EXPORT_NOISE_MODE_BALANCED
+        if (noiseMode != EXPORT_NOISE_MODE_OFF && isBrowserNoise(request, url, noiseMode)) {
+            return false
+        }
+
+        return true
     }
 }
 
@@ -161,6 +209,79 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
         LogWriter.instance?.log("WARN", "exporter", "Failed to convert proxy entry: ${e.message}", e)
         null
     }
+}
+
+private fun buildUrl(request: burp.api.montoya.http.message.requests.HttpRequest): String? {
+    val httpService = request.httpService()
+    val path = request.path() ?: return null
+    return "${if (httpService.secure()) "https" else "http"}://${httpService.host()}$path"
+}
+
+private fun isBrowserNoise(
+    request: burp.api.montoya.http.message.requests.HttpRequest,
+    url: String,
+    noiseMode: String
+): Boolean {
+    val parsed = runCatching { URI(url) }.getOrNull()
+    val path = parsed?.path?.lowercase(Locale.ROOT) ?: ""
+    val method = request.method().uppercase(Locale.ROOT)
+    val accept = request.headerValue("Accept")?.lowercase(Locale.ROOT).orEmpty()
+    val secFetchDest = request.headerValue("Sec-Fetch-Dest")?.lowercase(Locale.ROOT).orEmpty()
+    val purpose = request.headerValue("Purpose")?.lowercase(Locale.ROOT).orEmpty()
+    val xPurpose = request.headerValue("X-Purpose")?.lowercase(Locale.ROOT).orEmpty()
+    val secPurpose = request.headerValue("Sec-Purpose")?.lowercase(Locale.ROOT).orEmpty()
+    val accessControlRequestMethod = request.headerValue("Access-Control-Request-Method")
+
+    if (method !in setOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")) {
+        return true
+    }
+
+    if (method == "OPTIONS" && !accessControlRequestMethod.isNullOrBlank()) {
+        return true
+    }
+
+    if (purpose in setOf("prefetch", "prerender") ||
+        xPurpose in setOf("prefetch", "prerender") ||
+        secPurpose in setOf("prefetch", "prerender")
+    ) {
+        return true
+    }
+
+    if (STATIC_ASSET_EXTENSIONS.any { path.endsWith(it) }) {
+        return true
+    }
+
+    if (noiseMode == EXPORT_NOISE_MODE_RELAXED) {
+        return false
+    }
+
+    if (LOW_VALUE_BROWSER_PATH_SUFFIXES.any { path.endsWith(it) }) {
+        return true
+    }
+
+    if (noiseMode == EXPORT_NOISE_MODE_STRICT &&
+        LOW_VALUE_BROWSER_PATH_FRAGMENTS.any { path.contains(it) }
+    ) {
+        return true
+    }
+
+    if (secFetchDest in setOf("image", "style", "script", "font", "video", "audio")) {
+        return true
+    }
+
+    if (accept.contains("image/") ||
+        accept.contains("text/css") ||
+        accept.contains("font/") ||
+        accept.contains("javascript")
+    ) {
+        return true
+    }
+
+    if (noiseMode == EXPORT_NOISE_MODE_BALANCED) {
+        return false
+    }
+
+    return false
 }
 
 private fun AuditIssue.toScannerIssueEntry(maxBodySize: Int): ScannerIssueEntry? {

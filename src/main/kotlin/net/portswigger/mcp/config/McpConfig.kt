@@ -8,6 +8,22 @@ import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
 private const val TARGET_SEPARATOR = "\n"
+private const val PLUGIN_SEPARATOR = "\n"
+const val EXPORT_NOISE_MODE_OFF = "off"
+const val EXPORT_NOISE_MODE_RELAXED = "relaxed"
+const val EXPORT_NOISE_MODE_BALANCED = "balanced"
+const val EXPORT_NOISE_MODE_STRICT = "strict"
+private val VALID_EXPORT_NOISE_MODES = setOf(
+    EXPORT_NOISE_MODE_OFF,
+    EXPORT_NOISE_MODE_RELAXED,
+    EXPORT_NOISE_MODE_BALANCED,
+    EXPORT_NOISE_MODE_STRICT
+)
+
+fun normalizeExportNoiseMode(value: String?): String {
+    val normalized = value?.trim()?.lowercase().orEmpty()
+    return if (normalized in VALID_EXPORT_NOISE_MODES) normalized else EXPORT_NOISE_MODE_BALANCED
+}
 
 class McpConfig(storage: PersistedObject, private val logging: Logging) {
 
@@ -21,6 +37,24 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     var keepaliveIntervalSec by storage.int(30)
     var maxResponseSizeKb by storage.int(100)
     var strictLocalhostMode by storage.boolean(true)
+    var exportInScopeOnly by storage.boolean(false)
+    var filterBrowserNoise by storage.boolean(true)
+    private var _exportNoiseMode by storage.string("")
+    private var _knownBurpPlugins by storage.stringList("")
+    var saveRawDuplicates by storage.boolean(true)
+    var maxRawDuplicatesPerCanonical by storage.int(10)
+
+    var exportNoiseMode: String
+        get() {
+            val configured = _exportNoiseMode.trim()
+            if (configured.isNotEmpty()) return normalizeExportNoiseMode(configured)
+            return if (filterBrowserNoise) EXPORT_NOISE_MODE_BALANCED else EXPORT_NOISE_MODE_OFF
+        }
+        set(value) {
+            val normalized = normalizeExportNoiseMode(value)
+            _exportNoiseMode = normalized
+            filterBrowserNoise = normalized != EXPORT_NOISE_MODE_OFF
+        }
 
     private var _alwaysAllowHttpHistory by storage.boolean(false)
     var alwaysAllowHttpHistory: Boolean
@@ -55,11 +89,23 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
             }
         }
 
+    var knownBurpPlugins: String
+        get() = _knownBurpPlugins
+        set(value) {
+            _knownBurpPlugins = value
+        }
+
     init {
         val current = getAutoApproveTargetsList()
         val valid = current.filter { TargetValidation.isValidTarget(it) }
         if (valid.size != current.size) {
             _autoApproveTargets = valid.joinToString(TARGET_SEPARATOR)
+        }
+        if (_exportNoiseMode.isNotBlank()) {
+            val normalizedMode = normalizeExportNoiseMode(_exportNoiseMode)
+            if (normalizedMode != _exportNoiseMode) {
+                _exportNoiseMode = normalizedMode
+            }
         }
     }
 
@@ -93,6 +139,28 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
 
     fun clearAutoApproveTargets() {
         autoApproveTargets = ""
+    }
+
+    fun getKnownBurpPluginsList(): List<String> {
+        return if (_knownBurpPlugins.isBlank()) {
+            emptyList()
+        } else {
+            _knownBurpPlugins.split(PLUGIN_SEPARATOR).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        }
+    }
+
+    fun setKnownBurpPlugins(plugins: List<String>) {
+        knownBurpPlugins = plugins.map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(PLUGIN_SEPARATOR)
+    }
+
+    fun exportNoiseModeDescription(): String {
+        return when (exportNoiseMode) {
+            EXPORT_NOISE_MODE_OFF -> "Do not filter browser noise."
+            EXPORT_NOISE_MODE_RELAXED -> "Filter static assets like JS, CSS, images, fonts, and media."
+            EXPORT_NOISE_MODE_BALANCED -> "Also filter CORS preflight, favicon, manifest, robots, and service-worker traffic."
+            EXPORT_NOISE_MODE_STRICT -> "Also filter frontend hot-reload and browser prefetch/prerender traffic."
+            else -> "Unknown"
+        }
     }
 
     fun addTargetsChangeListener(listener: () -> Unit): ListenerHandle {
