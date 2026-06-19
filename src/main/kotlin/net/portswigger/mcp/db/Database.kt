@@ -311,7 +311,7 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    fun getProxyHttpDetail(ids: List<Int>): List<ProxyHttpEntry> {
+    fun getProxyHttpDetail(ids: List<Int>, includeDuplicates: Boolean = false): List<ProxyHttpEntry> {
         if (ids.isEmpty()) return emptyList()
         connection.autoCommit = true
         val placeholders = ids.joinToString(",") { "?" }
@@ -324,9 +324,10 @@ class Database(dbPath: String = ":memory:") {
             try {
                 val results = mutableListOf<ProxyHttpEntry>()
                 while (rs.next()) {
+                    val canonicalId = rs.getInt("id")
                     results.add(
                         ProxyHttpEntry(
-                            id = rs.getInt("id"),
+                            id = canonicalId,
                             method = rs.getString("method"),
                             status = rs.getObject("status") as? Int,
                             url = rs.getString("url"),
@@ -337,7 +338,8 @@ class Database(dbPath: String = ":memory:") {
                             contentType = rs.getString("content_type"),
                             paramNames = rs.getString("param_names"),
                             capturedAt = rs.getLong("captured_at"),
-                            hitCount = rs.getInt("hit_count")
+                            hitCount = rs.getInt("hit_count"),
+                            duplicates = if (includeDuplicates) getRawDuplicates(canonicalId) else emptyList()
                         )
                     )
                 }
@@ -347,6 +349,39 @@ class Database(dbPath: String = ":memory:") {
             }
         } finally {
             stmt.close()
+        }
+    }
+
+    private fun getRawDuplicates(canonicalId: Int): List<RawDuplicateEntry> {
+        val stmt = connection.prepareStatement(
+            """SELECT id, method, status, url, request_headers, request_body,
+                      response_headers, response_body, content_type, captured_at
+               FROM proxy_http_raw_duplicates
+               WHERE canonical_id = ?
+               ORDER BY captured_at DESC"""
+        )
+        return stmt.use { s ->
+            s.setInt(1, canonicalId)
+            val rs = s.executeQuery()
+            val list = mutableListOf<RawDuplicateEntry>()
+            while (rs.next()) {
+                list.add(
+                    RawDuplicateEntry(
+                        id = rs.getInt("id"),
+                        method = rs.getString("method"),
+                        status = rs.getObject("status") as? Int,
+                        url = rs.getString("url"),
+                        requestHeaders = rs.getString("request_headers"),
+                        requestBody = rs.getString("request_body"),
+                        responseHeaders = rs.getString("response_headers"),
+                        responseBody = rs.getString("response_body"),
+                        contentType = rs.getString("content_type"),
+                        capturedAt = rs.getLong("captured_at")
+                    )
+                )
+            }
+            rs.close()
+            list
         }
     }
 

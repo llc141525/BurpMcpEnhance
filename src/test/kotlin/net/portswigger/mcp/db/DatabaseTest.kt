@@ -261,6 +261,44 @@ class DatabaseTest {
     }
 
     @Test
+    fun `getProxyHttpDetail with includeDuplicates returns raw entries on canonical`() {
+        val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
+        val t = System.currentTimeMillis()
+
+        // Canonical
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(1, "POST", 200, "http://example.com/login",
+                    "Content-Type: application/json", """{"user":"alice"}""",
+                    null, null, "application/json", null, t, dedupKey = dedupKey)
+            ),
+            maxRawDuplicatesPerCanonical = 10
+        )
+        // Two raw duplicates
+        for (i in 2..3) {
+            database.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(i, "POST", 200, "http://example.com/login",
+                        "Content-Type: application/json", """{"user":"user$i"}""",
+                        null, null, "application/json", null, t + (i * 1000L), dedupKey = dedupKey)
+                ),
+                maxRawDuplicatesPerCanonical = 10
+            )
+        }
+
+        // Without includeDuplicates: duplicates list is empty
+        val withoutDups = database.getProxyHttpDetail(listOf(1)).first()
+        assertTrue(withoutDups.duplicates.isEmpty())
+
+        // With includeDuplicates: both raw entries are returned, newest first
+        val withDups = database.getProxyHttpDetail(listOf(1), includeDuplicates = true).first()
+        assertEquals(2, withDups.duplicates.size)
+        assertEquals(t + 3000L, withDups.duplicates[0].capturedAt) // newest first
+        assertEquals(t + 2000L, withDups.duplicates[1].capturedAt)
+        assertEquals("""{"user":"user3"}""", withDups.duplicates[0].requestBody)
+    }
+
+    @Test
     fun `pruneRawDuplicates keeps only the N most recent raw duplicates per canonical`() {
         val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
         val t = System.currentTimeMillis()
