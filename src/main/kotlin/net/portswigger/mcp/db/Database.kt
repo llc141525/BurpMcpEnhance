@@ -16,6 +16,7 @@ class Database(dbPath: String = ":memory:") {
         conn.autoCommit = true
         conn.createStatement().apply {
             execute("PRAGMA journal_mode=WAL")
+            execute("PRAGMA foreign_keys = ON")
             close()
         }
         createTables(conn)
@@ -60,6 +61,26 @@ class Database(dbPath: String = ":memory:") {
                     expires_at INTEGER NOT NULL
                 )
             """.trimIndent())
+            execute("""
+                CREATE TABLE IF NOT EXISTS proxy_http_raw_duplicates (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    canonical_id     INTEGER NOT NULL
+                                       REFERENCES proxy_http_history(id) ON DELETE CASCADE,
+                    method           TEXT NOT NULL,
+                    status           INTEGER,
+                    url              TEXT NOT NULL,
+                    request_headers  TEXT,
+                    request_body     TEXT,
+                    response_headers TEXT,
+                    response_body    TEXT,
+                    content_type     TEXT,
+                    captured_at      INTEGER NOT NULL
+                )
+            """.trimIndent())
+            execute("""
+                CREATE INDEX IF NOT EXISTS idx_raw_dup_canonical
+                    ON proxy_http_raw_duplicates(canonical_id, captured_at DESC)
+            """.trimIndent())
             close()
         }
     }
@@ -75,34 +96,6 @@ class Database(dbPath: String = ":memory:") {
             }
             try { execute("CREATE INDEX IF NOT EXISTS idx_history_dedup ON proxy_http_history(dedup_key, captured_at)") } catch (e: Exception) {
                 net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX: ${e.message}", e)
-            }
-            try {
-                execute("""
-                    CREATE TABLE IF NOT EXISTS proxy_http_raw_duplicates (
-                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                        canonical_id     INTEGER NOT NULL
-                                           REFERENCES proxy_http_history(id) ON DELETE CASCADE,
-                        method           TEXT NOT NULL,
-                        status           INTEGER,
-                        url              TEXT NOT NULL,
-                        request_headers  TEXT,
-                        request_body     TEXT,
-                        response_headers TEXT,
-                        response_body    TEXT,
-                        content_type     TEXT,
-                        captured_at      INTEGER NOT NULL
-                    )
-                """.trimIndent())
-            } catch (e: Exception) {
-                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE raw_duplicates: ${e.message}", e)
-            }
-            try {
-                execute("""
-                    CREATE INDEX IF NOT EXISTS idx_raw_dup_canonical
-                        ON proxy_http_raw_duplicates(canonical_id, captured_at DESC)
-                """.trimIndent())
-            } catch (e: Exception) {
-                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE idx_raw_dup: ${e.message}", e)
             }
             close()
         }
@@ -419,7 +412,11 @@ class Database(dbPath: String = ":memory:") {
             val blobCount = if (blobRs.next()) blobRs.getInt(1) else 0
             blobRs.close()
 
-            return DbStats(proxyHttpCount = httpCount, scannerIssueCount = scannerCount, blobCount = blobCount)
+            val rawDupRs = stmt.executeQuery("SELECT COUNT(*) FROM proxy_http_raw_duplicates")
+            val rawDupCount = if (rawDupRs.next()) rawDupRs.getInt(1) else 0
+            rawDupRs.close()
+
+            return DbStats(proxyHttpCount = httpCount, scannerIssueCount = scannerCount, blobCount = blobCount, rawDuplicateCount = rawDupCount)
         } finally {
             stmt.close()
         }

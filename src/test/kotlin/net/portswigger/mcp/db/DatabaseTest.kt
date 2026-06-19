@@ -222,8 +222,8 @@ class DatabaseTest {
     }
 
     @Test
-    fun `raw duplicates table is created on migration`() {
-        // stats() returning rawDuplicateCount without error proves the table exists
+    fun `raw duplicates table is created and stats returns correct count`() {
+        // Verify the table exists and stats() correctly queries it (returns 0 for an empty table)
         val stats = database.stats()
         assertEquals(0, stats.rawDuplicateCount)
     }
