@@ -165,6 +165,7 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
             appendLine("Database proxy HTTP entries: ${stats.dbStats.proxyHttpCount}")
             appendLine("Database scanner issues: ${stats.dbStats.scannerIssueCount}")
             if (stats.dbStats.blobCount > 0) appendLine("Database large responses: ${stats.dbStats.blobCount}")
+            if (stats.dbStats.rawDuplicateCount > 0) appendLine("Raw duplicate requests: ${stats.dbStats.rawDuplicateCount}")
         }
     }
 

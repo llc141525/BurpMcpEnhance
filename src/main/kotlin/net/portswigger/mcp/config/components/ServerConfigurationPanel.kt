@@ -1,6 +1,10 @@
 package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.Design
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_BALANCED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_OFF
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_RELAXED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_STRICT
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.ToggleSwitch
 import java.awt.FlowLayout
@@ -17,6 +21,10 @@ class ServerConfigurationPanel(
 
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
+    private lateinit var exportInScopeOnlyCheckBox: JCheckBox
+    private lateinit var exportNoiseModeComboBox: JComboBox<ExportNoiseModeOption>
+    private lateinit var saveRawDuplicatesCheckBox: JCheckBox
+    private lateinit var maxRawDuplicatesSpinner: JSpinner
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -61,6 +69,18 @@ class ServerConfigurationPanel(
             config.requireHistoryAccessApproval
         ) { config.alwaysAllowWebSocketHistory = it }
         add(alwaysAllowWebSocketHistoryCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        exportInScopeOnlyCheckBox = createStandardCheckBox(
+            "仅导出 Scope 内请求", config.exportInScopeOnly
+        ) { config.exportInScopeOnly = it }
+        add(exportInScopeOnlyCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        add(createExportNoiseModePanel())
+        add(createVerticalStrut(Design.Spacing.MD))
+
+        add(createRawDuplicatesPanel())
 
         add(validationErrorLabel)
     }
@@ -132,6 +152,94 @@ class ServerConfigurationPanel(
         }
     }
 
+    private fun createExportNoiseModePanel(): JPanel {
+        val options = arrayOf(
+            ExportNoiseModeOption(EXPORT_NOISE_MODE_OFF, "关闭", "不过滤浏览器请求噪音"),
+            ExportNoiseModeOption(EXPORT_NOISE_MODE_RELAXED, "宽松", "过滤静态资源，如 JS/CSS/图片/字体"),
+            ExportNoiseModeOption(EXPORT_NOISE_MODE_BALANCED, "平衡", "额外过滤预检、favicon、manifest、service worker"),
+            ExportNoiseModeOption(EXPORT_NOISE_MODE_STRICT, "严格", "额外过滤热更新、prefetch/prerender 等低价值流量")
+        )
+
+        exportNoiseModeComboBox = JComboBox(options).apply {
+            alignmentX = LEFT_ALIGNMENT
+            selectedItem = options.firstOrNull { it.mode == config.exportNoiseMode } ?: options[2]
+            addItemListener { event ->
+                if (event.stateChange == ItemEvent.SELECTED) {
+                    val selected = event.item as? ExportNoiseModeOption ?: return@addItemListener
+                    config.exportNoiseMode = selected.mode
+                }
+            }
+        }
+
+        val label = JLabel("导出降噪模式").apply {
+            font = Design.Typography.bodyMedium
+            foreground = Design.Colors.onSurfaceVariant
+        }
+
+        val subtitle = JLabel("AI 读取缓存历史时的默认降噪强度").apply {
+            font = Design.Typography.labelMedium
+            foreground = Design.Colors.onSurfaceVariant
+        }
+
+        return JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = LEFT_ALIGNMENT
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder(0, Design.Spacing.LG, 0, 0)
+            add(label)
+            add(createVerticalStrut(Design.Spacing.SM))
+            add(exportNoiseModeComboBox)
+            add(createVerticalStrut(Design.Spacing.SM))
+            add(subtitle)
+        }
+    }
+
+    private fun createRawDuplicatesPanel(): JPanel {
+        val panel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = LEFT_ALIGNMENT
+            isOpaque = false
+        }
+
+        saveRawDuplicatesCheckBox = createStandardCheckBox(
+            "保存重复请求的原始数据", config.saveRawDuplicates
+        ) { enabled ->
+            config.saveRawDuplicates = enabled
+            maxRawDuplicatesSpinner.isEnabled = enabled
+        }
+        panel.add(saveRawDuplicatesCheckBox)
+        panel.add(createVerticalStrut(Design.Spacing.SM))
+
+        val spinnerPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            alignmentX = LEFT_ALIGNMENT
+            border = BorderFactory.createEmptyBorder(0, Design.Spacing.LG, 0, 0)
+        }
+
+        maxRawDuplicatesSpinner = JSpinner(SpinnerNumberModel(
+            config.maxRawDuplicatesPerCanonical.coerceIn(1, 100), 1, 100, 1
+        )).apply {
+            isEnabled = config.saveRawDuplicates
+            preferredSize = java.awt.Dimension(60, preferredSize.height)
+            addChangeListener {
+                config.maxRawDuplicatesPerCanonical = (value as Int)
+            }
+        }
+
+        spinnerPanel.add(JLabel("每个接口最多保留 ").apply {
+            font = Design.Typography.bodyLarge
+            foreground = Design.Colors.onSurface
+        })
+        spinnerPanel.add(maxRawDuplicatesSpinner)
+        spinnerPanel.add(JLabel(" 条").apply {
+            font = Design.Typography.bodyLarge
+            foreground = Design.Colors.onSurface
+        })
+        panel.add(spinnerPanel)
+
+        return panel
+    }
+
     private fun createCheckBoxWithSubtitle(
         mainText: String, subtitleText: String, initialValue: Boolean, onChange: (Boolean) -> Unit
     ): JPanel {
@@ -166,4 +274,12 @@ class ServerConfigurationPanel(
         }
     }
 
+}
+
+private data class ExportNoiseModeOption(
+    val mode: String,
+    val label: String,
+    val description: String
+) {
+    override fun toString(): String = "$label - $description"
 }
