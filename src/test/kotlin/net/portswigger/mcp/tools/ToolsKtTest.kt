@@ -1448,6 +1448,32 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `get_proxy_http_detail with include_duplicates returns raw entries in output`() {
+            val db = serverManager.database ?: fail("Database should be initialized")
+            val dedupKey = net.portswigger.mcp.db.Database.computeDedupKey("POST", "http://target.com/login")
+            val t = System.currentTimeMillis()
+            db.upsertProxyHttpHistory(
+                listOf(ProxyHttpEntry(1, "POST", 200, "http://target.com/login",
+                    "Content-Type: application/json", """{"user":"alice"}""",
+                    null, null, "application/json", null, t, dedupKey = dedupKey)),
+                maxRawDuplicatesPerCanonical = 10
+            )
+            db.upsertProxyHttpHistory(
+                listOf(ProxyHttpEntry(2, "POST", 200, "http://target.com/login",
+                    "Content-Type: application/json", """{"user":"bob"}""",
+                    null, null, "application/json", null, t + 1000, dedupKey = dedupKey)),
+                maxRawDuplicatesPerCanonical = 10
+            )
+            runBlocking {
+                val result = client.callTool("get_proxy_http_detail",
+                    mapOf("ids" to "1", "include_duplicates" to true))
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Raw Duplicates"), "Output should contain Raw Duplicates section: $text")
+                assertTrue(text.contains("""{"user":"bob"}"""), "Output should contain bob's body: $text")
+            }
+        }
+
+        @Test
         fun `list_scanner_issues should return empty when no data`() {
             runBlocking {
                 val result = client.callTool("list_scanner_issues", mapOf("count" to 10, "offset" to 0))

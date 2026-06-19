@@ -3,14 +3,13 @@ package net.portswigger.mcp.tools
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.db.Database
-import net.portswigger.mcp.db.ProxyHttpSummary
 import net.portswigger.mcp.exporter.Exporter
 
 @Serializable
 data class ListProxyHttpHistory(override val count: Int = 30, override val offset: Int = 0) : Paginated
 
 @Serializable
-data class GetProxyHttpDetail(val ids: String)
+data class GetProxyHttpDetail(val ids: String, val include_duplicates: Boolean = false)
 
 @Serializable
 data class ListScannerIssues(override val count: Int = 30, override val offset: Int = 0) : Paginated
@@ -35,16 +34,22 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
         if (entries.isEmpty()) {
             "No proxy HTTP history entries found"
         } else {
-            entries.joinToString("\n\n") { entry ->
-                buildString {
-                    appendLine("ID: ${entry.id}")
-                    appendLine("Method: ${entry.method}")
-                    entry.status?.let { appendLine("Status: $it") }
-                    appendLine("URL: ${entry.url}")
-                    entry.contentType?.let { appendLine("Content-Type: $it") }
-                    entry.paramNames?.let { appendLine("Params: ${it.joinToString(", ")}") }
-                    if (entry.hitCount > 1) appendLine("Hits: ${entry.hitCount}")
-                }
+            buildString {
+                appendLine("Export noise mode: ${exporter.noiseModeSummary()}")
+                appendLine()
+                append(entries.joinToString("\n\n") { entry ->
+                    buildString {
+                        appendLine("ID: ${entry.id}")
+                        appendLine("Method: ${entry.method}")
+                        entry.status?.let { appendLine("Status: $it") }
+                        appendLine("URL: ${entry.url}")
+                        entry.contentType?.let { appendLine("Content-Type: $it") }
+                        entry.paramNames?.let { appendLine("Params: ${it.joinToString(", ")}") }
+                        if (entry.hitCount > 1) appendLine("Hits: ${entry.hitCount}")
+                    }
+                })
+                appendLine()
+                append("Tip: use get_export_noise_mode or set_export_noise_mode to inspect or change cache filtering.")
             }
         }
     }
@@ -52,11 +57,13 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
     mcpTool<GetProxyHttpDetail>(
         "Gets full proxy HTTP history details by IDs. Provide comma-separated IDs (e.g., \"1,2,3\"). " +
         "Returns complete request/response data for the specified entries. " +
+        "Set include_duplicates=true to also retrieve raw duplicate requests captured for the same endpoint " +
+        "(e.g., multiple login attempts or credential-stuffing requests to the same URL). " +
         "Call list_proxy_http_history first to get IDs, then drill down with this tool."
     ) {
         val idList = ids.split(",").mapNotNull { it.trim().toIntOrNull() }
         if (idList.isEmpty()) return@mcpTool "No valid IDs provided: $ids"
-        val entries = database.getProxyHttpDetail(idList)
+        val entries = database.getProxyHttpDetail(idList, includeDuplicates = include_duplicates)
         if (entries.isEmpty()) return@mcpTool "No entries found for IDs: $ids"
         entries.joinToString("\n\n---\n\n") { entry ->
             buildString {
@@ -81,6 +88,19 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                     append(entry.responseBody)
                     appendLine()
                     appendLine("[Body truncated to 8KB]")
+                }
+                if (entry.duplicates.isNotEmpty()) {
+                    appendLine()
+                    appendLine("--- Raw Duplicates (${entry.duplicates.size}) ---")
+                    entry.duplicates.forEachIndexed { i, dup ->
+                        appendLine()
+                        appendLine("Duplicate ${i + 1}:")
+                        dup.requestHeaders?.let { appendLine(it) }
+                        if (!dup.requestBody.isNullOrBlank()) {
+                            appendLine()
+                            append(dup.requestBody)
+                        }
+                    }
                 }
             }
         }
