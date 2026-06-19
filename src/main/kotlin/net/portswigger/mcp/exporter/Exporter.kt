@@ -15,6 +15,7 @@ import net.portswigger.mcp.db.ProxyHttpEntry
 import net.portswigger.mcp.db.ScannerIssueEntry
 import net.portswigger.mcp.logging.LogWriter
 import java.net.URI
+import java.net.URLDecoder
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -32,6 +33,15 @@ private val LOW_VALUE_BROWSER_PATH_SUFFIXES = setOf(
 private val LOW_VALUE_BROWSER_PATH_FRAGMENTS = setOf(
     "/apple-touch-icon", "/android-chrome-", "/mstile-", "/@vite/client",
     "/__vite_ping", "/__webpack_hmr", "/sockjs-node", "hot-update.", "webpack-hmr"
+)
+
+private val NOISE_QUERY_KEYS = setOf(
+    "_", "t", "ts", "timestamp", "cb", "cacheBust", "cache_bust", "nonce", "rnd"
+)
+
+private val SENSITIVE_RESPONSE_MARKERS = listOf(
+    "\"token\"", "\"accessToken\"", "\"refreshToken\"", "\"secret\"", "\"apiKey\"",
+    "\"authorization\"", "\"password\"", "\"session\"", "\"cookie\"", "\"set-cookie\""
 )
 
 class Exporter(
@@ -183,13 +193,14 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
         val httpService = request.httpService()
         val method = request.method()
         val url = "${if (httpService.secure()) "https" else "http"}://${httpService.host()}${request.path()}"
+        val responseBody = response?.body()?.toString()?.take(maxBodySize)
+        val contentType = response?.headerValue("Content-Type")
+        val paramNames = extractParamNames(request.body()?.toString(), request.path())
+        val signal = summarizeEndpoint(method, url, response?.statusCode()?.toInt(), contentType, paramNames, responseBody)
 
         val requestHeaders = request.headers().joinToString("\r\n") { "${it.name()}: ${it.value()}" }
         val requestBody = request.body()?.toString()?.take(maxBodySize)
         val responseHeaders = response?.headers()?.joinToString("\r\n") { "${it.name()}: ${it.value()}" }
-        val responseBody = response?.body()?.toString()?.take(maxBodySize)
-        val contentType = response?.headerValue("Content-Type")
-        val paramNames = extractParamNames(request.body()?.toString(), request.path())
 
         ProxyHttpEntry(
             id = this.time().toEpochSecond().toInt().coerceAtLeast(0),
@@ -203,7 +214,15 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
             contentType = contentType,
             paramNames = paramNames?.joinToString(","),
             capturedAt = System.currentTimeMillis(),
-            dedupKey = Database.computeDedupKey(method, url)
+            dedupKey = Database.computeDedupKey(method, signal.canonicalUrl),
+            canonicalUrl = signal.canonicalUrl,
+            endpointFingerprint = signal.endpointFingerprint,
+            requestParamCount = signal.requestParamCount,
+            responseSummary = signal.responseSummary,
+            sensitiveMarkerCount = signal.sensitiveMarkerCount,
+            authRequiredHint = signal.authRequiredHint,
+            endpointScore = signal.endpointScore,
+            candidateReason = signal.candidateReason
         )
     } catch (e: Exception) {
         LogWriter.instance?.log("WARN", "exporter", "Failed to convert proxy entry: ${e.message}", e)
@@ -330,4 +349,117 @@ internal fun extractParamNames(body: String?, path: String?): List<String>? {
         }
     }
     return params.take(20).ifEmpty { null }
+}
+
+private data class EndpointSignal(
+    val canonicalUrl: String,
+    val endpointFingerprint: String,
+    val requestParamCount: Int,
+    val responseSummary: String,
+    val sensitiveMarkerCount: Int,
+    val authRequiredHint: String?,
+    val endpointScore: Int,
+    val candidateReason: String?
+)
+
+private fun summarizeEndpoint(
+    method: String,
+    url: String,
+    status: Int?,
+    contentType: String?,
+    paramNames: List<String>?,
+    responseBody: String?
+): EndpointSignal {
+    val canonicalUrl = canonicalizeUrl(url)
+    val normalizedContentType = contentType?.substringBefore(";")?.trim()?.lowercase(Locale.ROOT)
+    val sensitiveMarkerCount = SENSITIVE_RESPONSE_MARKERS.sumOf { marker ->
+        responseBody?.contains(marker, ignoreCase = true)?.let { if (it) 1 else 0 } ?: 0
+    }
+    val authRequiredHint = inferAuthRequiredHint(status, responseBody)
+    val requestParamCount = paramNames?.size ?: 0
+    val summaryParts = mutableListOf<String>()
+    status?.let { summaryParts.add("status=$it") }
+    normalizedContentType?.let { summaryParts.add("type=$it") }
+    if (requestParamCount > 0) summaryParts.add("params=$requestParamCount")
+    if (sensitiveMarkerCount > 0) summaryParts.add("sensitive=$sensitiveMarkerCount")
+    authRequiredHint?.let { summaryParts.add("auth=$it") }
+
+    val candidateReasons = mutableListOf<String>()
+    var score = 0
+    if (requestParamCount > 0) {
+        score += 10 + minOf(requestParamCount, 5) * 4
+        candidateReasons.add("has_params")
+    }
+    if (method.uppercase(Locale.ROOT) != "GET") {
+        score += 10
+        candidateReasons.add("state_change_surface")
+    }
+    if (normalizedContentType?.contains("json") == true) {
+        score += 10
+        candidateReasons.add("json_api")
+    }
+    if (sensitiveMarkerCount > 0) {
+        score += 10 + sensitiveMarkerCount * 5
+        candidateReasons.add("sensitive_markers")
+    }
+    if (authRequiredHint != null) {
+        score += 15
+        candidateReasons.add("auth_gate")
+    }
+    if ((status ?: 0) >= 500) {
+        score += 10
+        candidateReasons.add("server_error")
+    }
+    if (canonicalUrl.contains("/admin", ignoreCase = true) || canonicalUrl.contains("/manage", ignoreCase = true)) {
+        score += 10
+        candidateReasons.add("admin_surface")
+    }
+
+    return EndpointSignal(
+        canonicalUrl = canonicalUrl,
+        endpointFingerprint = Database.computeDedupKey(method.uppercase(Locale.ROOT), canonicalUrl),
+        requestParamCount = requestParamCount,
+        responseSummary = summaryParts.joinToString(", ").ifBlank { "status=${status ?: "unknown"}" },
+        sensitiveMarkerCount = sensitiveMarkerCount,
+        authRequiredHint = authRequiredHint,
+        endpointScore = score.coerceAtMost(100),
+        candidateReason = candidateReasons.distinct().take(4).joinToString(",").ifBlank { null }
+    )
+}
+
+private fun canonicalizeUrl(url: String): String {
+    val parsed = runCatching { URI(url) }.getOrNull() ?: return url
+    val base = buildString {
+        append(parsed.scheme ?: "http")
+        append("://")
+        append(parsed.host ?: parsed.authority.orEmpty())
+        if (parsed.port != -1 && parsed.port != 80 && parsed.port != 443) {
+            append(":")
+            append(parsed.port)
+        }
+        append(parsed.path ?: "/")
+    }
+    val rawQuery = parsed.rawQuery ?: return base
+    val normalizedQuery = rawQuery
+        .split("&")
+        .mapNotNull { pair ->
+            if (pair.isBlank()) return@mapNotNull null
+            val name = pair.substringBefore("=")
+            val decoded = runCatching { URLDecoder.decode(name, Charsets.UTF_8.name()) }.getOrDefault(name)
+            if (decoded in NOISE_QUERY_KEYS) null else decoded
+        }
+        .distinct()
+        .sorted()
+    return if (normalizedQuery.isEmpty()) base else "$base?${normalizedQuery.joinToString("&")}"
+}
+
+private fun inferAuthRequiredHint(status: Int?, responseBody: String?): String? {
+    val body = responseBody?.lowercase(Locale.ROOT).orEmpty()
+    return when {
+        status == 401 -> "unauthenticated"
+        status == 403 -> "forbidden"
+        "login" in body || "sign in" in body || "unauthorized" in body -> "login_required"
+        "access denied" in body || "permission" in body -> "forbidden"
+        else -> null
+    }
 }

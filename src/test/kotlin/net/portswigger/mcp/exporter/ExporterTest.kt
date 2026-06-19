@@ -15,6 +15,8 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.db.Database
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.ZoneId
@@ -261,13 +263,44 @@ class ExporterTest {
         assertEquals(0, database.stats().rawDuplicateCount)
     }
 
+    @Test
+    fun `exportProxyHttpHistory should compute candidate summaries`() = runBlocking {
+        val entry = createMockProxyEntry(
+            timestampSeconds = 1000,
+            url = "http://example.com/api/admin/users?id=1&_ts=99",
+            method = "POST",
+            responseStatus = 403,
+            contentType = "application/json; charset=utf-8",
+            responseBody = """{"token":"abc","message":"access denied"}"""
+        )
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(entry)
+        }
+
+        exporter.exportProxyHttpHistory()
+
+        val stored = database.listProxyHttpHistory().first()
+        assertTrue(stored.endpointScore >= 30)
+        assertNotNull(stored.candidateReason)
+        assertEquals("forbidden", stored.authRequiredHint)
+        assertTrue(stored.sensitiveMarkerCount >= 1)
+
+        val detail = database.getProxyHttpDetail(listOf(stored.id)).first()
+        assertEquals("http://example.com/api/admin/users", detail.canonicalUrl)
+        assertNotNull(detail.endpointFingerprint)
+        assertTrue(detail.responseSummary?.contains("status=403") == true)
+    }
+
     private fun createMockProxyEntry(
         timestampSeconds: Long,
         url: String,
         method: String = "GET",
         accept: String? = null,
         secFetchDest: String? = null,
-        accessControlRequestMethod: String? = null
+        accessControlRequestMethod: String? = null,
+        responseStatus: Int? = null,
+        contentType: String? = null,
+        responseBody: String? = null
     ): ProxyHttpRequestResponse {
         val mockEntry = mockk<ProxyHttpRequestResponse>(relaxed = true)
         val zonedDateTime = ZonedDateTime.ofInstant(
@@ -294,6 +327,19 @@ class ExporterTest {
         every { mockRequest.headerValue("Purpose") } returns null
         every { mockRequest.headerValue("X-Purpose") } returns null
         every { mockRequest.headerValue("Sec-Purpose") } returns null
+
+        if (responseStatus != null || contentType != null || responseBody != null) {
+            val mockResponse = mockk<burp.api.montoya.http.message.responses.HttpResponse>(relaxed = true)
+            every { mockEntry.response() } returns mockResponse
+            if (responseStatus != null) every { mockResponse.statusCode() } returns responseStatus.toShort()
+            every { mockResponse.headerValue("Content-Type") } returns contentType
+            every { mockResponse.body() } returns responseBody?.let {
+                mockk<burp.api.montoya.core.ByteArray>(relaxed = true).also { body ->
+                    every { body.toString() } returns it
+                }
+            }
+            every { mockResponse.headers() } returns emptyList()
+        }
 
         return mockEntry
     }

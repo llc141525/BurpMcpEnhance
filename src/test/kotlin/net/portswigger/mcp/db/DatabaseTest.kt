@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.nio.file.Files
 
 class DatabaseTest {
 
@@ -330,5 +331,82 @@ class DatabaseTest {
         assertEquals(3, stats.rawDuplicateCount) // only 3 remain after pruning
         val canonical = database.getProxyHttpDetail(listOf(1)).first()
         assertEquals(5, canonical.hitCount)      // hit_count incremented for all 5 upserts
+    }
+
+    @Test
+    fun `migration adds candidate summary columns for existing database`() {
+        val tempFile = Files.createTempFile("mcp-db-migration", ".sqlite")
+        Database(tempFile.toString()).close()
+
+        val migrated = Database(tempFile.toString())
+        try {
+            migrated.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(
+                        id = 99,
+                        method = "GET",
+                        status = 200,
+                        url = "http://example.com/api/users?id=1",
+                        requestHeaders = null,
+                        requestBody = null,
+                        responseHeaders = null,
+                        responseBody = "{\"token\":\"abc\"}",
+                        contentType = "application/json",
+                        paramNames = "id",
+                        capturedAt = 1000,
+                        canonicalUrl = "http://example.com/api/users?id",
+                        endpointFingerprint = "fp-1",
+                        requestParamCount = 1,
+                        responseSummary = "status=200, type=application/json",
+                        sensitiveMarkerCount = 1,
+                        authRequiredHint = "login_required",
+                        endpointScore = 77,
+                        candidateReason = "json_api,sensitive_markers"
+                    )
+                )
+            )
+
+            val summary = migrated.listProxyHttpHistory().first()
+            assertEquals(77, summary.endpointScore)
+            assertEquals("json_api,sensitive_markers", summary.candidateReason)
+            assertEquals("login_required", summary.authRequiredHint)
+            assertEquals(1, summary.sensitiveMarkerCount)
+
+            val detail = migrated.getProxyHttpDetail(listOf(99)).first()
+            assertEquals("http://example.com/api/users?id", detail.canonicalUrl)
+            assertEquals("fp-1", detail.endpointFingerprint)
+            assertEquals(1, detail.requestParamCount)
+            assertEquals("status=200, type=application/json", detail.responseSummary)
+        } finally {
+            migrated.close()
+        }
+    }
+
+    @Test
+    fun `listSecurityCandidates orders by score and filters low value by default`() {
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(
+                    11, "GET", 200, "http://example.com/health", null, null, null, null,
+                    "text/plain", null, 1000, endpointScore = 10, candidateReason = "low_signal"
+                ),
+                ProxyHttpEntry(
+                    12, "POST", 403, "http://example.com/admin/users", null, null, null, null,
+                    "application/json", "id", 1001, endpointScore = 72,
+                    candidateReason = "auth_gate,admin_surface", authRequiredHint = "forbidden"
+                ),
+                ProxyHttpEntry(
+                    13, "GET", 200, "http://example.com/api/me", null, null, null, null,
+                    "application/json", "verbose", 1002, endpointScore = 55,
+                    candidateReason = "json_api,has_params"
+                )
+            )
+        )
+
+        val filtered = database.listSecurityCandidates(minScore = 30)
+        assertEquals(listOf(12, 13), filtered.map { it.id })
+
+        val inclusive = database.listSecurityCandidates(minScore = 30, includeLowValue = true)
+        assertEquals(listOf(12, 13, 11), inclusive.map { it.id })
     }
 }

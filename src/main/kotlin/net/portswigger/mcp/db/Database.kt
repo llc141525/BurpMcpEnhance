@@ -94,8 +94,35 @@ class Database(dbPath: String = ":memory:") {
             try { execute("ALTER TABLE proxy_http_history ADD COLUMN hit_count INTEGER DEFAULT 1") } catch (e: Exception) {
                 net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER hit_count: ${e.message}", e)
             }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN canonical_url TEXT") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER canonical_url: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN endpoint_fingerprint TEXT") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER endpoint_fingerprint: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN request_param_count INTEGER") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER request_param_count: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN response_summary TEXT") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER response_summary: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN sensitive_marker_count INTEGER DEFAULT 0") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER sensitive_marker_count: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN auth_required_hint TEXT") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER auth_required_hint: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN endpoint_score INTEGER DEFAULT 0") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER endpoint_score: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_history ADD COLUMN candidate_reason TEXT") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER candidate_reason: ${e.message}", e)
+            }
             try { execute("CREATE INDEX IF NOT EXISTS idx_history_dedup ON proxy_http_history(dedup_key, captured_at)") } catch (e: Exception) {
                 net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX: ${e.message}", e)
+            }
+            try { execute("CREATE INDEX IF NOT EXISTS idx_history_score ON proxy_http_history(endpoint_score DESC, captured_at DESC)") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX score: ${e.message}", e)
             }
             close()
         }
@@ -152,8 +179,10 @@ class Database(dbPath: String = ":memory:") {
                 val insertStmt = connection.prepareStatement(
                     "INSERT OR REPLACE INTO proxy_http_history " +
                     "(id, method, status, url, request_headers, request_body, response_headers, response_body, " +
-                    "content_type, param_names, captured_at, dedup_key, hit_count) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "content_type, param_names, captured_at, dedup_key, hit_count, canonical_url, " +
+                    "endpoint_fingerprint, request_param_count, response_summary, sensitive_marker_count, " +
+                    "auth_required_hint, endpoint_score, candidate_reason) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 )
                 try {
                     for (entry in newEntries) {
@@ -170,6 +199,14 @@ class Database(dbPath: String = ":memory:") {
                         insertStmt.setLong(11, entry.capturedAt)
                         if (entry.dedupKey != null) insertStmt.setString(12, entry.dedupKey) else insertStmt.setNull(12, java.sql.Types.VARCHAR)
                         insertStmt.setInt(13, 1)
+                        insertStmt.setString(14, entry.canonicalUrl)
+                        insertStmt.setString(15, entry.endpointFingerprint)
+                        if (entry.requestParamCount != null) insertStmt.setInt(16, entry.requestParamCount) else insertStmt.setNull(16, java.sql.Types.INTEGER)
+                        insertStmt.setString(17, entry.responseSummary)
+                        insertStmt.setInt(18, entry.sensitiveMarkerCount)
+                        insertStmt.setString(19, entry.authRequiredHint)
+                        insertStmt.setInt(20, entry.endpointScore)
+                        insertStmt.setString(21, entry.candidateReason)
                         insertStmt.addBatch()
                     }
                     insertStmt.executeBatch()
@@ -281,7 +318,9 @@ class Database(dbPath: String = ":memory:") {
     fun listProxyHttpHistory(offset: Int = 0, count: Int = 30): List<ProxyHttpSummary> {
         connection.autoCommit = true
         val stmt = connection.prepareStatement(
-            "SELECT id, method, status, url, content_type, param_names, COALESCE(hit_count, 1) as hit_count FROM proxy_http_history ORDER BY id DESC LIMIT ? OFFSET ?"
+            "SELECT id, method, status, url, content_type, param_names, COALESCE(hit_count, 1) as hit_count, " +
+                "endpoint_score, candidate_reason, auth_required_hint, sensitive_marker_count, response_summary " +
+                "FROM proxy_http_history ORDER BY id DESC LIMIT ? OFFSET ?"
         )
         try {
             stmt.setInt(1, count)
@@ -298,7 +337,12 @@ class Database(dbPath: String = ":memory:") {
                             url = rs.getString("url"),
                             contentType = rs.getString("content_type"),
                             paramNames = rs.getString("param_names")?.split(",")?.filter { it.isNotEmpty() },
-                            hitCount = rs.getInt("hit_count")
+                            hitCount = rs.getInt("hit_count"),
+                            endpointScore = rs.getInt("endpoint_score"),
+                            candidateReason = rs.getString("candidate_reason"),
+                            authRequiredHint = rs.getString("auth_required_hint"),
+                            sensitiveMarkerCount = rs.getInt("sensitive_marker_count"),
+                            responseSummary = rs.getString("response_summary")
                         )
                     )
                 }
@@ -338,8 +382,66 @@ class Database(dbPath: String = ":memory:") {
                             contentType = rs.getString("content_type"),
                             paramNames = rs.getString("param_names"),
                             capturedAt = rs.getLong("captured_at"),
+                            canonicalUrl = rs.getString("canonical_url"),
+                            endpointFingerprint = rs.getString("endpoint_fingerprint"),
+                            requestParamCount = rs.getObject("request_param_count") as? Int,
+                            responseSummary = rs.getString("response_summary"),
+                            sensitiveMarkerCount = rs.getInt("sensitive_marker_count"),
+                            authRequiredHint = rs.getString("auth_required_hint"),
+                            endpointScore = rs.getInt("endpoint_score"),
+                            candidateReason = rs.getString("candidate_reason"),
                             hitCount = rs.getInt("hit_count"),
                             duplicates = if (includeDuplicates) getRawDuplicates(canonicalId) else emptyList()
+                        )
+                    )
+                }
+                return results
+            } finally {
+                rs.close()
+            }
+        } finally {
+            stmt.close()
+        }
+    }
+
+    fun listSecurityCandidates(
+        offset: Int = 0,
+        count: Int = 20,
+        minScore: Int = 30,
+        includeLowValue: Boolean = false
+    ): List<ProxyHttpSummary> {
+        connection.autoCommit = true
+        val stmt = connection.prepareStatement(
+            "SELECT id, method, status, url, content_type, param_names, COALESCE(hit_count, 1) as hit_count, " +
+                "endpoint_score, candidate_reason, auth_required_hint, sensitive_marker_count, response_summary " +
+                "FROM proxy_http_history " +
+                "WHERE candidate_reason IS NOT NULL " +
+                "AND (? = 1 OR COALESCE(endpoint_score, 0) >= ?) " +
+                "ORDER BY COALESCE(endpoint_score, 0) DESC, COALESCE(hit_count, 1) DESC, id DESC LIMIT ? OFFSET ?"
+        )
+        try {
+            stmt.setInt(1, if (includeLowValue) 1 else 0)
+            stmt.setInt(2, minScore)
+            stmt.setInt(3, count)
+            stmt.setInt(4, offset)
+            val rs = stmt.executeQuery()
+            try {
+                val results = mutableListOf<ProxyHttpSummary>()
+                while (rs.next()) {
+                    results.add(
+                        ProxyHttpSummary(
+                            id = rs.getInt("id"),
+                            method = rs.getString("method"),
+                            status = rs.getObject("status") as? Int,
+                            url = rs.getString("url"),
+                            contentType = rs.getString("content_type"),
+                            paramNames = rs.getString("param_names")?.split(",")?.filter { it.isNotEmpty() },
+                            hitCount = rs.getInt("hit_count"),
+                            endpointScore = rs.getInt("endpoint_score"),
+                            candidateReason = rs.getString("candidate_reason"),
+                            authRequiredHint = rs.getString("auth_required_hint"),
+                            sensitiveMarkerCount = rs.getInt("sensitive_marker_count"),
+                            responseSummary = rs.getString("response_summary")
                         )
                     )
                 }
@@ -636,7 +738,12 @@ data class ProxyHttpSummary(
     val url: String,
     val contentType: String?,
     val paramNames: List<String>?,
-    val hitCount: Int = 1
+    val hitCount: Int = 1,
+    val endpointScore: Int = 0,
+    val candidateReason: String? = null,
+    val authRequiredHint: String? = null,
+    val sensitiveMarkerCount: Int = 0,
+    val responseSummary: String? = null
 )
 
 data class ProxyHttpEntry(
@@ -652,6 +759,14 @@ data class ProxyHttpEntry(
     val paramNames: String?,
     val capturedAt: Long,
     val dedupKey: String? = null,
+    val canonicalUrl: String? = null,
+    val endpointFingerprint: String? = null,
+    val requestParamCount: Int? = null,
+    val responseSummary: String? = null,
+    val sensitiveMarkerCount: Int = 0,
+    val authRequiredHint: String? = null,
+    val endpointScore: Int = 0,
+    val candidateReason: String? = null,
     val hitCount: Int = 1,
     val duplicates: List<RawDuplicateEntry> = emptyList()
 )

@@ -12,6 +12,14 @@ data class ListProxyHttpHistory(override val count: Int = 30, override val offse
 data class GetProxyHttpDetail(val ids: String, val include_duplicates: Boolean = false)
 
 @Serializable
+data class ListSecurityCandidates(
+    override val count: Int = 20,
+    override val offset: Int = 0,
+    val minScore: Int = 30,
+    val includeLowValue: Boolean = false
+) : Paginated
+
+@Serializable
 data class ListScannerIssues(override val count: Int = 30, override val offset: Int = 0) : Paginated
 
 @Serializable
@@ -27,8 +35,8 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
 
     mcpTool<ListProxyHttpHistory>(
         "Lists proxy HTTP history from local cache. Returns lightweight entries with id, method, status, url, " +
-        "content_type, param_names, and hit_count. Use get_proxy_http_detail with specific IDs to get full request/response data. " +
-        "Use count ≤ 20 for smaller responses."
+        "content_type, param_names, hit_count, and candidate summary fields. Prefer list_security_candidates first, " +
+        "then use get_proxy_http_detail with specific IDs only when you need request or response evidence. Use count ≤ 20."
     ) {
         val entries = database.listProxyHttpHistory(offset = offset, count = count.coerceAtMost(20))
         if (entries.isEmpty()) {
@@ -46,6 +54,11 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                         entry.contentType?.let { appendLine("Content-Type: $it") }
                         entry.paramNames?.let { appendLine("Params: ${it.joinToString(", ")}") }
                         if (entry.hitCount > 1) appendLine("Hits: ${entry.hitCount}")
+                        if (entry.endpointScore > 0) appendLine("Endpoint-Score: ${entry.endpointScore}")
+                        entry.candidateReason?.let { appendLine("Candidate-Reason: $it") }
+                        entry.authRequiredHint?.let { appendLine("Auth-Hint: $it") }
+                        if (entry.sensitiveMarkerCount > 0) appendLine("Sensitive-Markers: ${entry.sensitiveMarkerCount}")
+                        entry.responseSummary?.let { appendLine("Response-Summary: $it") }
                     }
                 })
                 appendLine()
@@ -54,9 +67,45 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
         }
     }
 
+    mcpTool<ListSecurityCandidates>(
+        "Lists high-signal proxy cache candidates ranked for security review. Returns only summary fields and no bodies. " +
+        "Prefer this before reading raw history. Use minScore to tighten the queue, or includeLowValue=true to see the tail."
+    ) {
+        val entries = database.listSecurityCandidates(
+            offset = offset,
+            count = count.coerceAtMost(20),
+            minScore = minScore.coerceIn(0, 100),
+            includeLowValue = includeLowValue
+        )
+        if (entries.isEmpty()) {
+            "No security candidates found"
+        } else {
+            buildString {
+                appendLine("Export noise mode: ${exporter.noiseModeSummary()}")
+                appendLine("Candidate threshold: score >= ${minScore.coerceIn(0, 100)}${if (includeLowValue) " (low-value included)" else ""}")
+                appendLine()
+                append(entries.joinToString("\n\n") { entry ->
+                    buildString {
+                        appendLine("ID: ${entry.id}")
+                        appendLine("Method: ${entry.method}")
+                        entry.status?.let { appendLine("Status: $it") }
+                        appendLine("URL: ${entry.url}")
+                        appendLine("Endpoint-Score: ${entry.endpointScore}")
+                        entry.paramNames?.let { appendLine("Params: ${it.joinToString(", ")}") }
+                        if (entry.hitCount > 1) appendLine("Hits: ${entry.hitCount}")
+                        entry.candidateReason?.let { appendLine("Candidate-Reason: $it") }
+                        entry.authRequiredHint?.let { appendLine("Auth-Hint: $it") }
+                        if (entry.sensitiveMarkerCount > 0) appendLine("Sensitive-Markers: ${entry.sensitiveMarkerCount}")
+                        entry.responseSummary?.let { appendLine("Response-Summary: $it") }
+                    }
+                })
+            }
+        }
+    }
+
     mcpTool<GetProxyHttpDetail>(
-        "Gets full proxy HTTP history details by IDs. Provide comma-separated IDs (e.g., \"1,2,3\"). " +
-        "Returns complete request/response data for the specified entries. " +
+        "Gets proxy HTTP history details by IDs. Provide comma-separated IDs (e.g., \"1,2,3\"). " +
+        "Prefer list_security_candidates first. This returns request and response evidence for the specified entries. " +
         "Set include_duplicates=true to also retrieve raw duplicate requests captured for the same endpoint " +
         "(e.g., multiple login attempts or credential-stuffing requests to the same URL). " +
         "Call list_proxy_http_history first to get IDs, then drill down with this tool."
@@ -73,6 +122,13 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                 appendLine("URL: ${entry.url}")
                 entry.contentType?.let { appendLine("Content-Type: $it") }
                 if (entry.hitCount > 1) appendLine("Hits: ${entry.hitCount}")
+                entry.canonicalUrl?.let { appendLine("Canonical-URL: $it") }
+                entry.endpointFingerprint?.let { appendLine("Endpoint-Fingerprint: $it") }
+                if (entry.endpointScore > 0) appendLine("Endpoint-Score: ${entry.endpointScore}")
+                entry.candidateReason?.let { appendLine("Candidate-Reason: $it") }
+                entry.authRequiredHint?.let { appendLine("Auth-Hint: $it") }
+                if (entry.sensitiveMarkerCount > 0) appendLine("Sensitive-Markers: ${entry.sensitiveMarkerCount}")
+                entry.responseSummary?.let { appendLine("Response-Summary: $it") }
                 appendLine()
                 appendLine("--- Request ---")
                 entry.requestHeaders?.let { appendLine(it) }

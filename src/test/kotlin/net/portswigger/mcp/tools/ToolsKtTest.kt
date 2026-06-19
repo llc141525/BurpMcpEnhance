@@ -1422,6 +1422,7 @@ class ToolsKtTest {
                 val tools = client.listTools()
                 val toolNames = tools.map { it.name }
                 assertTrue(toolNames.contains("list_proxy_http_history"), "Should contain list_proxy_http_history: $toolNames")
+                assertTrue(toolNames.contains("list_security_candidates"), "Should contain list_security_candidates: $toolNames")
                 assertTrue(toolNames.contains("get_proxy_http_detail"), "Should contain get_proxy_http_detail: $toolNames")
                 assertTrue(toolNames.contains("list_scanner_issues"), "Should contain list_scanner_issues: $toolNames")
                 assertTrue(toolNames.contains("get_scanner_issue_detail"), "Should contain get_scanner_issue_detail: $toolNames")
@@ -1444,6 +1445,38 @@ class ToolsKtTest {
                 val result = client.callTool("get_proxy_http_detail", mapOf("ids" to "1,2,3"))
                 val text = result.expectTextContent()
                 assertTrue(text.contains("No entries found for IDs"))
+            }
+        }
+
+        @Test
+        fun `list_security_candidates should return ranked summary output`() {
+            val db = serverManager.database ?: fail("Database should be initialized")
+            db.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(
+                        41, "POST", 403, "http://example.com/admin/users?id=1",
+                        null, null, null, """{"token":"abc"}""", "application/json", "id",
+                        System.currentTimeMillis(), endpointScore = 82,
+                        candidateReason = "auth_gate,admin_surface", authRequiredHint = "forbidden",
+                        sensitiveMarkerCount = 1, responseSummary = "status=403, type=application/json"
+                    ),
+                    ProxyHttpEntry(
+                        42, "GET", 200, "http://example.com/ping",
+                        null, null, null, "ok", "text/plain", null,
+                        System.currentTimeMillis(), endpointScore = 5, candidateReason = "low_signal"
+                    )
+                )
+            )
+
+            runBlocking {
+                val result = client.callTool(
+                    "list_security_candidates",
+                    mapOf("count" to 10, "offset" to 0, "minScore" to 30, "includeLowValue" to false)
+                )
+                val text = result.expectTextContent()
+                assertTrue(text.contains("ID: 41"), "Expected high-score entry: $text")
+                assertTrue(text.contains("Endpoint-Score: 82"), "Expected score: $text")
+                assertFalse(text.contains("ID: 42"), "Low-score entry should be filtered: $text")
             }
         }
 
