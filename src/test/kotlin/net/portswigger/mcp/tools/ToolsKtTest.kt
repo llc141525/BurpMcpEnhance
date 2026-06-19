@@ -60,28 +60,40 @@ class ToolsKtTest {
     private val config: McpConfig
     private val mockHeaders = mutableListOf<HttpHeader>()
     private val capturedRequest = slot<HttpRequest>()
+    private val configBooleanStore = mutableMapOf<String, Boolean>()
+    private val configIntStore = mutableMapOf<String, Int>()
+    private val configStringStore = mutableMapOf<String, String>()
 
     init {
         val persistedObject = mockk<PersistedObject>().apply {
-            every { getBoolean("enabled") } returns true
-            every { getBoolean("configEditingTooling") } returns true
-            every { getBoolean("requireHttpRequestApproval") } returns false
-            every { getBoolean("requireHistoryAccessApproval") } returns false
-            every { getBoolean("_alwaysAllowHttpHistory") } returns false
-            every { getBoolean("_alwaysAllowWebSocketHistory") } returns false
-            every { getBoolean("keepaliveEnabled") } returns true
-            every { getBoolean("strictLocalhostMode") } returns true
-            every { getInteger("port") } returns testPort
-            every { getInteger("keepaliveIntervalSec") } returns 30
-            every { getInteger("maxResponseSizeKb") } returns 100
-            every { setBoolean(any(), any()) } returns Unit
-            every { setInteger(any(), any()) } returns Unit
+            configBooleanStore.putAll(
+                mapOf(
+                    "enabled" to true,
+                    "configEditingTooling" to true,
+                    "requireHttpRequestApproval" to false,
+                    "requireHistoryAccessApproval" to false,
+                    "_alwaysAllowHttpHistory" to false,
+                    "_alwaysAllowWebSocketHistory" to false,
+                    "keepaliveEnabled" to true,
+                    "strictLocalhostMode" to true,
+                    "filterBrowserNoise" to true
+                )
+            )
+            configIntStore.putAll(
+                mapOf(
+                    "port" to testPort,
+                    "keepaliveIntervalSec" to 30,
+                    "maxResponseSizeKb" to 100
+                )
+            )
+            configStringStore["host"] = "127.0.0.1"
 
-            val stringStore = mutableMapOf<String, String>().apply {
-                put("host", "127.0.0.1")
-            }
-            every { getString(any()) } answers { stringStore[firstArg<String>()] ?: "" }
-            every { setString(any(), any()) } answers { stringStore[firstArg<String>()] = secondArg<String>() }
+            every { getBoolean(any()) } answers { configBooleanStore[firstArg<String>()] ?: false }
+            every { getInteger(any()) } answers { configIntStore[firstArg<String>()] ?: 0 }
+            every { getString(any()) } answers { configStringStore[firstArg<String>()] ?: "" }
+            every { setBoolean(any(), any()) } answers { configBooleanStore[firstArg<String>()] = secondArg<Boolean>() }
+            every { setInteger(any(), any()) } answers { configIntStore[firstArg<String>()] = secondArg<Int>() }
+            every { setString(any(), any()) } answers { configStringStore[firstArg<String>()] = secondArg<String>() }
         }
         val mockLogging = mockk<Logging>().apply {
             every { logToError(any<String>()) } returns Unit
@@ -89,10 +101,6 @@ class ToolsKtTest {
         }
 
         config = McpConfig(persistedObject, mockLogging)
-        
-        mockkStatic(HttpHeader::class)
-        mockkStatic(burp.api.montoya.http.HttpService::class)
-        mockkStatic(HttpRequest::class)
     }
 
     private fun CallToolResult?.expectTextContent(
@@ -145,6 +153,9 @@ class ToolsKtTest {
     
     @BeforeEach
     fun setup() {
+        mockkStatic(HttpHeader::class)
+        mockkStatic(burp.api.montoya.http.HttpService::class)
+        mockkStatic(HttpRequest::class)
         setupHttpHeaderMocks()
 
         serverManager.start(config) { state ->
@@ -170,6 +181,9 @@ class ToolsKtTest {
     fun tearDown() {
         runBlocking { if (client.isConnected()) client.close() }
         serverManager.stop {}
+        unmockkStatic(HttpHeader::class)
+        unmockkStatic(burp.api.montoya.http.HttpService::class)
+        unmockkStatic(HttpRequest::class)
     }
 
     @Nested
@@ -726,6 +740,57 @@ class ToolsKtTest {
                     "manage_auto_approve_targets", mapOf("action" to "add")
                 )
                 assertTrue(result.expectTextContent().contains("target is required"))
+            }
+        }
+    }
+
+    @Nested
+    inner class ExportNoiseModeToolsTests {
+        @Test
+        fun `export noise mode tools should be registered`() {
+            runBlocking {
+                val tools = client.listTools()
+                val names = tools.map { it.name }
+                assertTrue(names.contains("get_export_noise_mode"))
+                assertTrue(names.contains("set_export_noise_mode"))
+            }
+        }
+
+        @Test
+        fun `get export noise mode should return current config`() {
+            config.exportNoiseMode = "balanced"
+            config.exportInScopeOnly = true
+
+            runBlocking {
+                val result = client.callTool("get_export_noise_mode", emptyMap<String, Any>())
+                val text = result.expectTextContent()
+                assertTrue(text.contains("mode=balanced"))
+                assertTrue(text.contains("in_scope_only=true"))
+            }
+        }
+
+        @Test
+        fun `set export noise mode should update config`() {
+            runBlocking {
+                val result = client.callTool(
+                    "set_export_noise_mode", mapOf("mode" to "strict", "inScopeOnly" to false)
+                )
+                val text = result.expectTextContent()
+                assertTrue(text.contains("mode=strict"))
+                assertTrue(text.contains("in_scope_only=false"))
+            }
+
+            assertEquals("strict", config.exportNoiseMode)
+            assertFalse(config.exportInScopeOnly)
+        }
+
+        @Test
+        fun `set export noise mode should reject invalid mode`() {
+            runBlocking {
+                val result = client.callTool(
+                    "set_export_noise_mode", mapOf("mode" to "aggressive")
+                )
+                result.expectTextContent("Invalid mode: aggressive. Use 'off', 'relaxed', 'balanced', or 'strict'.")
             }
         }
     }
@@ -1862,6 +1927,10 @@ class ToolsKtTest {
                     "Should include edition: $text")
                 assertTrue(text.contains("graphql") || text.contains("diff") || text.contains("scope"),
                     "Should list available tool categories: $text")
+                assertTrue(text.contains("Third-party plugin support"),
+                    "Should include third-party plugin section: $text")
+                assertTrue(text.contains("Request-handler plugins") || text.contains("Available plugins"),
+                    "Should mention plugin capabilities: $text")
             }
         }
     }

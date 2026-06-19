@@ -84,6 +84,7 @@ tasks {
     test {
         useJUnitPlatform()
         systemProperty("file.encoding", "UTF-8")
+        jvmArgs("-Xmx512m", "-XX:+UseParallelGC", "-XX:+EnableDynamicAgentLoading", "-Djdk.attach.allowAttachSelf=true")
 
         testLogging {
             events("passed", "skipped", "failed")
