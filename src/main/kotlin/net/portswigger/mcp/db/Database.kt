@@ -108,12 +108,16 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    fun upsertProxyHttpHistory(entries: List<ProxyHttpEntry>) {
+    fun upsertProxyHttpHistory(
+        entries: List<ProxyHttpEntry>,
+        maxRawDuplicatesPerCanonical: Int = 0
+    ) {
         connection.autoCommit = false
         try {
-            // Split entries into new vs duplicates within dedup window
+            data class RawToInsert(val canonicalId: Int, val entry: ProxyHttpEntry)
+
             val newEntries = mutableListOf<ProxyHttpEntry>()
-            val duplicateDedupKeys = mutableListOf<String>()
+            val rawToInsert = mutableListOf<RawToInsert>()
 
             val dedupCutoff = System.currentTimeMillis() - dedupWindowMs
 
@@ -128,13 +132,13 @@ class Database(dbPath: String = ":memory:") {
                         dedupCheckStmt.setString(1, dedupKey)
                         dedupCheckStmt.setLong(2, dedupCutoff)
                         val rs = dedupCheckStmt.executeQuery()
-                        val found = rs.next()
-                        rs.close()
-                        if (found) {
-                            duplicateDedupKeys.add(dedupKey)
+                        if (rs.next()) {
+                            val canonicalId = rs.getInt("id")
+                            rawToInsert.add(RawToInsert(canonicalId, entry))
                         } else {
                             newEntries.add(entry)
                         }
+                        rs.close()
                     } else {
                         newEntries.add(entry)
                     }
@@ -143,7 +147,7 @@ class Database(dbPath: String = ":memory:") {
                 dedupCheckStmt.close()
             }
 
-            // Batch insert new entries
+            // Batch insert new canonical entries
             if (newEntries.isNotEmpty()) {
                 val insertStmt = connection.prepareStatement(
                     "INSERT OR REPLACE INTO proxy_http_history " +
@@ -174,14 +178,46 @@ class Database(dbPath: String = ":memory:") {
                 }
             }
 
-            // Increment hit_count for dedup matches
-            if (duplicateDedupKeys.isNotEmpty()) {
+            // Store raw duplicates and update hit_count
+            if (rawToInsert.isNotEmpty()) {
+                if (maxRawDuplicatesPerCanonical > 0) {
+                    val rawInsertStmt = connection.prepareStatement(
+                        "INSERT INTO proxy_http_raw_duplicates " +
+                        "(canonical_id, method, status, url, request_headers, request_body, " +
+                        "response_headers, response_body, content_type, captured_at) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    )
+                    val canonicalIdsForPruning = mutableSetOf<Int>()
+                    try {
+                        for (dup in rawToInsert) {
+                            rawInsertStmt.setInt(1, dup.canonicalId)
+                            rawInsertStmt.setString(2, dup.entry.method)
+                            if (dup.entry.status != null) rawInsertStmt.setInt(3, dup.entry.status) else rawInsertStmt.setNull(3, java.sql.Types.INTEGER)
+                            rawInsertStmt.setString(4, dup.entry.url)
+                            rawInsertStmt.setString(5, dup.entry.requestHeaders)
+                            rawInsertStmt.setString(6, dup.entry.requestBody)
+                            rawInsertStmt.setString(7, dup.entry.responseHeaders)
+                            rawInsertStmt.setString(8, dup.entry.responseBody)
+                            rawInsertStmt.setString(9, dup.entry.contentType)
+                            rawInsertStmt.setLong(10, dup.entry.capturedAt)
+                            rawInsertStmt.addBatch()
+                            canonicalIdsForPruning.add(dup.canonicalId)
+                        }
+                        rawInsertStmt.executeBatch()
+                    } finally {
+                        rawInsertStmt.close()
+                    }
+                    for (canonicalId in canonicalIdsForPruning) {
+                        pruneRawDuplicates(canonicalId, maxRawDuplicatesPerCanonical)
+                    }
+                }
+
                 val updateStmt = connection.prepareStatement(
-                    "UPDATE proxy_http_history SET hit_count = hit_count + 1 WHERE dedup_key = ?"
+                    "UPDATE proxy_http_history SET hit_count = hit_count + 1 WHERE id = ?"
                 )
                 try {
-                    for (dedupKey in duplicateDedupKeys) {
-                        updateStmt.setString(1, dedupKey)
+                    for (dup in rawToInsert) {
+                        updateStmt.setInt(1, dup.canonicalId)
                         updateStmt.addBatch()
                     }
                     updateStmt.executeBatch()
@@ -194,6 +230,11 @@ class Database(dbPath: String = ":memory:") {
         } finally {
             connection.autoCommit = true
         }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun pruneRawDuplicates(canonicalId: Int, maxPerCanonical: Int) {
+        // stub — full implementation in Task 3
     }
 
     fun upsertScannerIssues(entries: List<ScannerIssueEntry>) {

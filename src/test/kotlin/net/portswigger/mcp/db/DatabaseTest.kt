@@ -227,4 +227,36 @@ class DatabaseTest {
         val stats = database.stats()
         assertEquals(0, stats.rawDuplicateCount)
     }
+
+    @Test
+    fun `duplicate login requests are stored in raw duplicates table`() {
+        val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
+        val t = System.currentTimeMillis()
+
+        // First: becomes canonical (id=1)
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(1, "POST", 200, "http://example.com/login",
+                    "Content-Type: application/json", """{"user":"alice","pass":"secret1"}""",
+                    null, null, "application/json", null, t, dedupKey = dedupKey)
+            ),
+            maxRawDuplicatesPerCanonical = 10
+        )
+
+        // Second: should go to raw table, not be discarded
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(2, "POST", 200, "http://example.com/login",
+                    "Content-Type: application/json", """{"user":"bob","pass":"secret2"}""",
+                    null, null, "application/json", null, t + 1000, dedupKey = dedupKey)
+            ),
+            maxRawDuplicatesPerCanonical = 10
+        )
+
+        val stats = database.stats()
+        assertEquals(1, stats.proxyHttpCount)        // still only one canonical
+        assertEquals(1, stats.rawDuplicateCount)     // one raw entry
+        val canonical = database.getProxyHttpDetail(listOf(1)).first()
+        assertEquals(2, canonical.hitCount)          // hit_count=2
+    }
 }
