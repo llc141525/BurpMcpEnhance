@@ -76,6 +76,34 @@ class Database(dbPath: String = ":memory:") {
             try { execute("CREATE INDEX IF NOT EXISTS idx_history_dedup ON proxy_http_history(dedup_key, captured_at)") } catch (e: Exception) {
                 net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX: ${e.message}", e)
             }
+            try {
+                execute("""
+                    CREATE TABLE IF NOT EXISTS proxy_http_raw_duplicates (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        canonical_id     INTEGER NOT NULL
+                                           REFERENCES proxy_http_history(id) ON DELETE CASCADE,
+                        method           TEXT NOT NULL,
+                        status           INTEGER,
+                        url              TEXT NOT NULL,
+                        request_headers  TEXT,
+                        request_body     TEXT,
+                        response_headers TEXT,
+                        response_body    TEXT,
+                        content_type     TEXT,
+                        captured_at      INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE raw_duplicates: ${e.message}", e)
+            }
+            try {
+                execute("""
+                    CREATE INDEX IF NOT EXISTS idx_raw_dup_canonical
+                        ON proxy_http_raw_duplicates(canonical_id, captured_at DESC)
+                """.trimIndent())
+            } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE idx_raw_dup: ${e.message}", e)
+            }
             close()
         }
     }
@@ -538,7 +566,8 @@ data class ProxyHttpEntry(
     val paramNames: String?,
     val capturedAt: Long,
     val dedupKey: String? = null,
-    val hitCount: Int = 1
+    val hitCount: Int = 1,
+    val duplicates: List<RawDuplicateEntry> = emptyList()
 )
 
 data class ScannerIssueSummary(
@@ -561,5 +590,19 @@ data class ScannerIssueEntry(
 data class DbStats(
     val proxyHttpCount: Int,
     val scannerIssueCount: Int,
-    val blobCount: Int = 0
+    val blobCount: Int = 0,
+    val rawDuplicateCount: Int = 0
+)
+
+data class RawDuplicateEntry(
+    val id: Int,
+    val method: String,
+    val status: Int?,
+    val url: String,
+    val requestHeaders: String?,
+    val requestBody: String?,
+    val responseHeaders: String?,
+    val responseBody: String?,
+    val contentType: String?,
+    val capturedAt: Long
 )

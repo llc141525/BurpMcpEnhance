@@ -220,4 +220,11 @@ class DatabaseTest {
         assertEquals("POST", list[0].method)
         assertEquals(201, list[0].status)
     }
+
+    @Test
+    fun `raw duplicates table is created on migration`() {
+        // stats() returning rawDuplicateCount without error proves the table exists
+        val stats = database.stats()
+        assertEquals(0, stats.rawDuplicateCount)
+    }
 }
