@@ -232,9 +232,22 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    @Suppress("UNUSED_PARAMETER")
     private fun pruneRawDuplicates(canonicalId: Int, maxPerCanonical: Int) {
-        // stub — full implementation in Task 3
+        connection.prepareStatement(
+            """DELETE FROM proxy_http_raw_duplicates
+               WHERE canonical_id = ?
+                 AND id NOT IN (
+                   SELECT id FROM proxy_http_raw_duplicates
+                   WHERE canonical_id = ?
+                   ORDER BY captured_at DESC
+                   LIMIT ?
+                 )"""
+        ).use { stmt ->
+            stmt.setInt(1, canonicalId)
+            stmt.setInt(2, canonicalId)
+            stmt.setInt(3, maxPerCanonical)
+            stmt.executeUpdate()
+        }
     }
 
     fun upsertScannerIssues(entries: List<ScannerIssueEntry>) {

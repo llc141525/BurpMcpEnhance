@@ -259,4 +259,38 @@ class DatabaseTest {
         val canonical = database.getProxyHttpDetail(listOf(1)).first()
         assertEquals(2, canonical.hitCount)          // hit_count=2
     }
+
+    @Test
+    fun `pruneRawDuplicates keeps only the N most recent raw duplicates per canonical`() {
+        val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
+        val t = System.currentTimeMillis()
+
+        // Insert canonical (id=1)
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(1, "POST", 200, "http://example.com/login",
+                    "Content-Type: application/json", """{"user":"alice"}""",
+                    null, null, "application/json", null, t, dedupKey = dedupKey)
+            ),
+            maxRawDuplicatesPerCanonical = 3
+        )
+
+        // Insert 4 raw duplicates (ids 2..5); pruning keeps only 3 most recent
+        for (i in 2..5) {
+            database.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(i, "POST", 200, "http://example.com/login",
+                        "Content-Type: application/json", """{"user":"user$i"}""",
+                        null, null, "application/json", null, t + (i * 1000L), dedupKey = dedupKey)
+                ),
+                maxRawDuplicatesPerCanonical = 3
+            )
+        }
+
+        val stats = database.stats()
+        assertEquals(1, stats.proxyHttpCount)    // one canonical
+        assertEquals(3, stats.rawDuplicateCount) // only 3 remain after pruning
+        val canonical = database.getProxyHttpDetail(listOf(1)).first()
+        assertEquals(5, canonical.hitCount)      // hit_count incremented for all 5 upserts
+    }
 }
