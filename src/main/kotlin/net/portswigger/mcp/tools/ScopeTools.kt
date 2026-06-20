@@ -119,3 +119,13 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
         }
     }
 }
+
+internal fun normalizeScanRequestContent(content: String): String =
+    content.replace("\r", "").replace("\n", "\r\n")
+
+internal fun buildScanRequestText(content: String?, host: String, path: String): String =
+    if (!content.isNullOrBlank()) {
+        normalizeScanRequestContent(content)
+    } else {
+        "GET $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
+    }
