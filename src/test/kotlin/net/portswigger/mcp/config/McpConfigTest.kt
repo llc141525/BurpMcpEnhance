@@ -24,9 +24,10 @@ class McpConfigTest {
                 val key = firstArg<String>()
                 storage[key] as? Boolean ?: when (key) {
                     "enabled" -> true
-                    "requireHttpRequestApproval" -> true
+                    "requireHttpRequestApproval" -> false
                     "keepaliveEnabled" -> true
                     "strictLocalhostMode" -> true
+                    "filterBrowserNoise" -> true
                     else -> false
                 }
             }
@@ -283,7 +284,7 @@ class McpConfigTest {
 
     @Test
     fun `requireHttpRequestApproval should persist correctly`() {
-        assertTrue(config.requireHttpRequestApproval)
+        assertFalse(config.requireHttpRequestApproval)
 
         config.requireHttpRequestApproval = false
         assertFalse(config.requireHttpRequestApproval)
@@ -356,6 +357,35 @@ class McpConfigTest {
         config.strictLocalhostMode = true
         assertTrue(config.strictLocalhostMode)
         verify { persistedObject.setBoolean("strictLocalhostMode", true) }
+    }
+
+    @Test
+    fun `export filter flags should default and persist correctly`() {
+        assertFalse(config.exportInScopeOnly)
+        assertTrue(config.filterBrowserNoise)
+        assertEquals("balanced", config.exportNoiseMode)
+
+        config.exportInScopeOnly = true
+        config.filterBrowserNoise = false
+
+        assertTrue(config.exportInScopeOnly)
+        assertFalse(config.filterBrowserNoise)
+        verify { persistedObject.setBoolean("exportInScopeOnly", true) }
+        verify { persistedObject.setBoolean("filterBrowserNoise", false) }
+    }
+
+    @Test
+    fun `exportNoiseMode should normalize and persist correctly`() {
+        config.exportNoiseMode = "STRICT"
+
+        assertEquals("strict", config.exportNoiseMode)
+        assertTrue(config.filterBrowserNoise)
+        verify { persistedObject.setString("_exportNoiseMode", "strict") }
+
+        config.exportNoiseMode = "off"
+        assertEquals("off", config.exportNoiseMode)
+        assertFalse(config.filterBrowserNoise)
+        verify { persistedObject.setString("_exportNoiseMode", "off") }
     }
 
     @Test

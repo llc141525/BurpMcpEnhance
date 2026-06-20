@@ -26,6 +26,8 @@ class ServerConfigurationPanel(
     private lateinit var saveRawDuplicatesCheckBox: JCheckBox
     private lateinit var maxRawDuplicatesSpinner: JSpinner
 
+    var onHttpApprovalChanged: ((Boolean) -> Unit)? = null
+
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         background = Design.Colors.surface
@@ -49,7 +51,10 @@ class ServerConfigurationPanel(
 
         val httpRequestApprovalCheckBox = createStandardCheckBox(
             "HTTP 请求需要审批", config.requireHttpRequestApproval
-        ) { config.requireHttpRequestApproval = it }
+        ) { enabled ->
+            config.requireHttpRequestApproval = enabled
+            onHttpApprovalChanged?.invoke(enabled)
+        }
         add(httpRequestApprovalCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
