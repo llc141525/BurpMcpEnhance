@@ -134,20 +134,21 @@ class HttpHistoryPanel : JPanel() {
             tableHeader.foreground = Design.Colors.onSurface
             setDefaultRenderer(Any::class.java, HistoryTableCellRenderer())
             autoResizeMode = JTable.AUTO_RESIZE_OFF
+            autoCreateRowSorter = true
         }
 
         table.columnModel.apply {
-            getColumn(0).apply { minWidth = 55; preferredWidth = 55; maxWidth = 70 }
-            getColumn(1).apply { minWidth = 45; preferredWidth = 50; maxWidth = 55 }
-            // column 2 = URL, managed by ComponentListener below
-            getColumn(3).apply { minWidth = 55; preferredWidth = 65; maxWidth = 75 }
-            getColumn(4).apply { minWidth = 60; preferredWidth = 65; maxWidth = 75 }
-            getColumn(5).apply { minWidth = 35; preferredWidth = 38; maxWidth = 45 }
+            getColumn(0).apply { minWidth = 48; preferredWidth = 50; maxWidth = 60 }    // Method
+            getColumn(1).apply { minWidth = 38; preferredWidth = 42; maxWidth = 50 }    // 状态
+            // column 2 = URL managed by ComponentListener
+            getColumn(3).apply { minWidth = 42; preferredWidth = 50; maxWidth = 60 }    // 类型
+            getColumn(4).apply { minWidth = 58; preferredWidth = 62; maxWidth = 72 }    // 时间
+            getColumn(5).apply { minWidth = 28; preferredWidth = 32; maxWidth = 40 }    // 命中
         }
 
         table.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(e: java.awt.event.ComponentEvent) {
-                val fixedTotal = (0..5).filter { it != 2 }.sumOf { table.columnModel.getColumn(it).preferredWidth }
+                val fixedTotal = 50 + 42 + 50 + 62 + 32  // Method + Status + Type + Time + Hit
                 val urlWidth = maxOf(80, table.width - fixedTotal)
                 table.columnModel.getColumn(2).preferredWidth = urlWidth
                 table.columnModel.getColumn(2).width = urlWidth
@@ -157,9 +158,12 @@ class HttpHistoryPanel : JPanel() {
         table.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2) {
-                    val row = table.selectedRow
-                    if (row >= 0 && row < rowIds.size) {
-                        openDetail(rowIds[row])
+                    val viewRow = table.selectedRow
+                    if (viewRow >= 0) {
+                        val modelRow = table.convertRowIndexToModel(viewRow)
+                        if (modelRow < rowIds.size) {
+                            openDetail(rowIds[modelRow])
+                        }
                     }
                 }
             }

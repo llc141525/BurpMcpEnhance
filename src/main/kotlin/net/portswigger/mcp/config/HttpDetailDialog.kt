@@ -163,11 +163,12 @@ class HttpDetailDialog(
     private fun formatBody(text: String?): String {
         if (text == null) return ""
         val trimmed = text.trim()
-        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text
-        return try {
-            prettyPrintJson(trimmed)
-        } catch (e: Exception) {
-            text
+        return when {
+            trimmed.startsWith("{") || trimmed.startsWith("[") ->
+                try { prettyPrintJson(trimmed) } catch (e: Exception) { text }
+            trimmed.startsWith("<") ->
+                try { prettyPrintXml(trimmed) } catch (e: Exception) { text }
+            else -> text
         }
     }
 
@@ -191,5 +192,24 @@ class HttpDetailDialog(
             }
         }
         return sb.toString()
+    }
+
+    private fun prettyPrintXml(xml: String): String {
+        return try {
+            val factory = javax.xml.transform.TransformerFactory.newInstance()
+            val transformer = factory.newTransformer().apply {
+                setOutputProperty(javax.xml.transform.OutputKeys.INDENT, "yes")
+                setOutputProperty(javax.xml.transform.OutputKeys.OMIT_XML_DECLARATION, "yes")
+                setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2")
+            }
+            val result = javax.xml.transform.stream.StreamResult(java.io.StringWriter())
+            transformer.transform(
+                javax.xml.transform.stream.StreamSource(java.io.StringReader(xml)),
+                result
+            )
+            result.writer.toString().trim()
+        } catch (e: Exception) {
+            xml
+        }
     }
 }

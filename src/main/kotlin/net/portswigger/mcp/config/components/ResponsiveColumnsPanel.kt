@@ -2,15 +2,17 @@ package net.portswigger.mcp.config.components
 
 import net.portswigger.mcp.config.Design
 import java.awt.BorderLayout
+import java.awt.Dimension
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JSplitPane
 
 class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPanel: JScrollPane) : JPanel() {
-    private val minWidthForTwoColumns = 900
+    private val minWidthForTwoColumns = 960
     private val minWidthForLargePadding = 700
     private var lastLayout = Layout.SINGLE_COLUMN
     private var lastPaddingSize = PaddingSize.SMALL
@@ -58,20 +60,28 @@ class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPan
 
         when (lastLayout) {
             Layout.TWO_COLUMNS -> {
-                layout = GridBagLayout()
-                val c = GridBagConstraints().apply {
-                    fill = GridBagConstraints.BOTH
-                    weighty = 1.0
+                layout = BorderLayout()
+
+                val leftScroll = JScrollPane(leftPanel).apply {
+                    border = BorderFactory.createEmptyBorder(padding, padding, padding, Design.Spacing.SM)
+                    viewport.background = Design.Colors.surface
+                    background = Design.Colors.surface
+                    horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+                    verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+                    minimumSize = Dimension(300, 0)
+                    preferredSize = Dimension(530, 0)
+                    verticalScrollBar.unitIncrement = 16
                 }
 
-                c.gridx = 0
-                c.gridy = 0
-                c.weightx = 0.30
-                add(leftPanel, c)
+                rightPanel.border = BorderFactory.createEmptyBorder(padding, Design.Spacing.SM, padding, padding)
 
-                c.gridx = 1
-                c.weightx = 0.70
-                add(rightPanel, c)
+                add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftScroll, rightPanel).apply {
+                    resizeWeight = 0.43
+                    dividerSize = 8
+                    border = null
+                    isContinuousLayout = true
+                    setDividerLocation(530)
+                }, BorderLayout.CENTER)
             }
 
             Layout.SINGLE_COLUMN -> {
