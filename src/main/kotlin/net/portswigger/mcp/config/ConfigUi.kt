@@ -1,5 +1,6 @@
 package net.portswigger.mcp.config
 
+import burp.api.montoya.MontoyaApi
 import io.ktor.util.network.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -8,22 +9,23 @@ import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.Swing
 import net.portswigger.mcp.config.components.*
 import net.portswigger.mcp.db.Database
-import net.portswigger.mcp.exporter.Exporter
 import net.portswigger.mcp.providers.Provider
-import net.portswigger.mcp.queue.FileQueue
-import net.portswigger.mcp.queue.MessageQueue
 import java.awt.BorderLayout
 import javax.swing.*
 import javax.swing.Box.*
 import javax.swing.JOptionPane.ERROR_MESSAGE
 
-class ConfigUi(private val config: McpConfig, private val providers: List<Provider>) {
+class ConfigUi(
+    private val api: MontoyaApi,
+    private val config: McpConfig,
+    private val providers: List<Provider>
+) {
 
     private val panel = JPanel(BorderLayout())
     val component: JComponent get() = panel
 
     private val listenerHandles = mutableListOf<ListenerHandle>()
-    private val statusDashboard = StatusDashboardPanel()
+    private val httpHistoryPanel = HttpHistoryPanel()
 
     private val enabledToggle: ToggleSwitch = Design.createToggleSwitch(false) { enabled ->
         if (suppressToggleEvents) return@createToggleSwitch
@@ -52,6 +54,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     private lateinit var advancedOptionsPanel: AdvancedOptionsPanel
     private lateinit var autoApproveTargetsPanel: AutoApproveTargetsPanel
     private lateinit var installationPanel: InstallationPanel
+    private lateinit var burpPluginSupportPanel: BurpPluginSupportPanel
 
     private var toggleListener: ((Boolean) -> Unit)? = null
     private var restartServerListener: (() -> Unit)? = null
@@ -66,6 +69,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         buildUi()
     }
 
+    @Suppress("UNUSED_PARAMETER")
     fun bindInfrastructure(
         messageQueue: Any?,
         fileQueue: Any?,
@@ -73,26 +77,24 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         exporter: Any?,
         activeConnectionProvider: (() -> Int)? = null
     ) {
-        statusDashboard.messageQueue = messageQueue as? MessageQueue
-        statusDashboard.fileQueue = fileQueue as? FileQueue
-        statusDashboard.database = database as? Database
-        statusDashboard.exporter = exporter as? Exporter
-        statusDashboard.activeConnectionProvider = activeConnectionProvider
-        statusDashboard.onRestartRequested = {
-            restartServerListener?.invoke()
+        httpHistoryPanel.database = database as? Database
+        httpHistoryPanel.onRestartRequested = { restartServerListener?.invoke() }
+        httpHistoryPanel.onClearCacheRequested = {
+            val result = Dialogs.showConfirmDialog(
+                panel, "确定要清除所有缓存数据吗？\n此操作不可撤销。",
+                JOptionPane.YES_NO_OPTION
+            )
+            if (result == JOptionPane.YES_OPTION) {
+                (database as? Database)?.clearAll()
+                httpHistoryPanel.loadData()
+            }
         }
-        statusDashboard.refreshAll()
-        statusDashboard.startRefreshing()
+        httpHistoryPanel.startRefreshing()
     }
 
     fun unbindInfrastructure() {
-        statusDashboard.stopRefreshing()
-        statusDashboard.messageQueue = null
-        statusDashboard.fileQueue = null
-        statusDashboard.database = null
-        statusDashboard.exporter = null
-        statusDashboard.activeConnectionProvider = null
-        statusDashboard.refreshAll()
+        httpHistoryPanel.stopRefreshing()
+        httpHistoryPanel.database = null
     }
 
     private fun initializeComponents() {
@@ -109,6 +111,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         installationPanel = InstallationPanel(
             config = config, providers = providers, reinstallNotice = reinstallNotice, parentComponent = panel
         )
+        burpPluginSupportPanel = BurpPluginSupportPanel(api = api, config = config)
 
         setupConfigListeners()
     }
@@ -124,7 +127,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     }
 
     fun cleanup() {
-        statusDashboard.stopRefreshing()
+        httpHistoryPanel.stopRefreshing()
         listenerHandles.forEach { it.remove() }
         listenerHandles.clear()
 
@@ -151,7 +154,7 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
     }
 
     fun updateServerState(state: ServerState) {
-        statusDashboard.updateServerState(state)
+        httpHistoryPanel.updateServerState(state)
         CoroutineScope(Dispatchers.Swing).launch {
             suppressToggleEvents = true
 
@@ -194,10 +197,51 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         }
     }
 
+    private fun buildCollapsibleCard(content: JComponent, title: String): JPanel {
+        var expanded = false
+        val arrowLabel = JLabel("▶").apply {
+            font = Design.Typography.labelMedium
+            foreground = Design.Colors.onSurfaceVariant
+        }
+        val contentWrapper = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(content, BorderLayout.CENTER)
+            isVisible = false
+        }
+        val headerPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder(Design.Spacing.SM, 0, Design.Spacing.SM, 0)
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            add(JLabel(title).apply {
+                font = Design.Typography.titleMedium
+                foreground = Design.Colors.onSurface
+            })
+            add(createHorizontalGlue())
+            add(arrowLabel)
+        }
+        val innerPanel = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(headerPanel, BorderLayout.NORTH)
+            add(contentWrapper, BorderLayout.CENTER)
+        }
+        val card = Design.createCard(innerPanel)
+        headerPanel.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                expanded = !expanded
+                contentWrapper.isVisible = expanded
+                arrowLabel.text = if (expanded) "▼" else "▶"
+                card.revalidate()
+                card.repaint()
+            }
+        })
+        return card
+    }
+
     private fun buildUi() {
         val leftPanel = JPanel(BorderLayout()).apply {
             background = Design.Colors.surface
-            add(statusDashboard, BorderLayout.CENTER)
+            add(httpHistoryPanel, BorderLayout.CENTER)
         }
 
         val rightPanelContent = JPanel().apply {
@@ -220,15 +264,30 @@ class ConfigUi(private val config: McpConfig, private val providers: List<Provid
         rightPanelContent.add(Design.createCard(serverConfigurationPanel, "服务器配置"))
         rightPanelContent.add(createVerticalStrut(Design.Spacing.MD))
 
-        rightPanelContent.add(Design.createCard(autoApproveTargetsPanel, "HTTP 自动放行目标"))
+        val autoApproveCard = Design.createCard(autoApproveTargetsPanel, "HTTP 自动放行目标").also {
+            it.isVisible = config.requireHttpRequestApproval
+        }
+        val autoApproveStrut = createVerticalStrut(Design.Spacing.MD).also {
+            it.isVisible = config.requireHttpRequestApproval
+        }
+        rightPanelContent.add(autoApproveCard)
+        rightPanelContent.add(autoApproveStrut)
 
+        serverConfigurationPanel.onHttpApprovalChanged = { enabled ->
+            autoApproveCard.isVisible = enabled
+            autoApproveStrut.isVisible = enabled
+            rightPanelContent.revalidate()
+            rightPanelContent.repaint()
+        }
+
+        rightPanelContent.add(buildCollapsibleCard(advancedOptionsPanel, "高级选项"))
         rightPanelContent.add(createVerticalStrut(Design.Spacing.MD))
-        rightPanelContent.add(Design.createCard(advancedOptionsPanel, "高级选项"))
-        rightPanelContent.add(createVerticalGlue())
-        rightPanelContent.add(reinstallNotice)
-        rightPanelContent.add(createVerticalStrut(10))
-
         rightPanelContent.add(Design.createCard(installationPanel, "安装"))
+        rightPanelContent.add(createVerticalStrut(Design.Spacing.MD))
+        rightPanelContent.add(Design.createCard(burpPluginSupportPanel, "第三方插件支持"))
+        rightPanelContent.add(createVerticalStrut(Design.Spacing.SM))
+        rightPanelContent.add(reinstallNotice)
+        rightPanelContent.add(createVerticalGlue())
 
         val columnsPanel = ResponsiveColumnsPanel(leftPanel, rightPanel)
         panel.add(columnsPanel, BorderLayout.CENTER)
