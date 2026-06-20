@@ -1,4 +1,4 @@
-# CLAUDE.md — Burp MCP Server
+# AGENTS.md — Burp MCP Server
 
 ## Task Routing (READ FIRST)
 
