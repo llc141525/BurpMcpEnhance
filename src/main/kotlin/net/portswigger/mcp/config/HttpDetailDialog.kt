@@ -14,10 +14,36 @@ class HttpDetailDialog(
     private val entry: ProxyHttpEntry
 ) : JDialog(SwingUtilities.getWindowAncestor(parent), ModalityType.APPLICATION_MODAL) {
 
+    private data class EntryView(
+        val requestHeaders: String?,
+        val requestBody: String?,
+        val responseHeaders: String?,
+        val responseBody: String?,
+        val label: String
+    )
+
+    private val allViews: List<EntryView> = run {
+        val list = mutableListOf<EntryView>()
+        list.add(EntryView(entry.requestHeaders, entry.requestBody, entry.responseHeaders, entry.responseBody, "规范"))
+        entry.duplicates.forEachIndexed { i, dup ->
+            list.add(EntryView(dup.requestHeaders, dup.requestBody, dup.responseHeaders, dup.responseBody, "副本 ${i + 1}"))
+        }
+        list
+    }
+    private var currentIndex = 0
+
+    private lateinit var reqHeadersArea: JTextArea
+    private lateinit var reqBodyArea: JTextArea
+    private lateinit var respHeadersArea: JTextArea
+    private lateinit var respBodyArea: JTextArea
+    private lateinit var navLabel: JLabel
+    private lateinit var prevButton: JButton
+    private lateinit var nextButton: JButton
+
     init {
         title = "${entry.method} ${entry.url} — ${entry.status ?: "?"}"
         defaultCloseOperation = DISPOSE_ON_CLOSE
-        preferredSize = Dimension(800, 600)
+        preferredSize = Dimension(880, 650)
         layout = BorderLayout()
 
         add(buildTabs(), BorderLayout.CENTER)
@@ -29,6 +55,7 @@ class HttpDetailDialog(
             override fun actionPerformed(e: ActionEvent?) = dispose()
         })
 
+        navigateTo(0)
         pack()
         setLocationRelativeTo(parent)
     }
@@ -41,30 +68,28 @@ class HttpDetailDialog(
     }
 
     private fun buildRequestTab(): JComponent {
-        return buildSplitPane(
-            top = buildTextArea(entry.requestHeaders ?: "（无请求头）"),
-            bottom = buildTextArea(entry.requestBody ?: "（无请求体）")
-        )
+        reqHeadersArea = buildTextArea("")
+        reqBodyArea = buildTextArea("")
+        return buildSplitPane(wrapScroll(reqHeadersArea), wrapScroll(reqBodyArea))
     }
 
     private fun buildResponseTab(): JComponent {
-        return buildSplitPane(
-            top = buildTextArea(entry.responseHeaders ?: "（无响应头）"),
-            bottom = buildTextArea(entry.responseBody ?: "（无响应体）")
-        )
+        respHeadersArea = buildTextArea("")
+        respBodyArea = buildTextArea("")
+        return buildSplitPane(wrapScroll(respHeadersArea), wrapScroll(respBodyArea))
     }
 
     private fun buildSplitPane(top: JComponent, bottom: JComponent): JSplitPane {
-        return JSplitPane(JSplitPane.VERTICAL_SPLIT, wrapScroll(top), wrapScroll(bottom)).apply {
-            dividerLocation = 180
-            resizeWeight = 0.3
+        return JSplitPane(JSplitPane.VERTICAL_SPLIT, top, bottom).apply {
+            dividerLocation = 200
+            resizeWeight = 0.35
         }
     }
 
     private fun buildTextArea(text: String): JTextArea {
         return JTextArea(text).apply {
             isEditable = false
-            font = Font(Font.MONOSPACED, Font.PLAIN, 12)
+            font = Font(Font.MONOSPACED, Font.PLAIN, 14)
             lineWrap = false
             wrapStyleWord = false
             background = Design.Colors.surface
@@ -82,13 +107,89 @@ class HttpDetailDialog(
     }
 
     private fun buildFooter(): JPanel {
+        navLabel = JLabel("")
+        prevButton = Design.createOutlinedButton("◀ 上一条").apply {
+            addActionListener { navigateTo(currentIndex - 1) }
+        }
+        nextButton = Design.createFilledButton("下一条 ▶").apply {
+            addActionListener { navigateTo(currentIndex + 1) }
+        }
+
         return JPanel().apply {
             layout = BoxLayout(this, BoxLayout.X_AXIS)
             border = BorderFactory.createEmptyBorder(8, 8, 8, 8)
+
+            if (allViews.size > 1) {
+                add(prevButton)
+                add(Box.createHorizontalStrut(8))
+                add(navLabel.apply {
+                    font = Design.Typography.bodyMedium
+                    foreground = Design.Colors.onSurfaceVariant
+                })
+                add(Box.createHorizontalStrut(8))
+                add(nextButton)
+            }
+
             add(Box.createHorizontalGlue())
             add(Design.createFilledButton("关闭").apply {
                 addActionListener { dispose() }
             })
         }
+    }
+
+    private fun navigateTo(index: Int) {
+        if (index < 0 || index >= allViews.size) return
+        currentIndex = index
+        val v = allViews[index]
+
+        if (::reqHeadersArea.isInitialized) {
+            reqHeadersArea.text = v.requestHeaders ?: "（无请求头）"
+            reqHeadersArea.caretPosition = 0
+            reqBodyArea.text = if (v.requestBody.isNullOrBlank()) "（无请求体）" else formatBody(v.requestBody)
+            reqBodyArea.caretPosition = 0
+            respHeadersArea.text = v.responseHeaders ?: "（无响应头）"
+            respHeadersArea.caretPosition = 0
+            respBodyArea.text = if (v.responseBody.isNullOrBlank()) "（无响应体）" else formatBody(v.responseBody)
+            respBodyArea.caretPosition = 0
+        }
+
+        if (allViews.size > 1 && ::navLabel.isInitialized) {
+            navLabel.text = "${v.label}  (${index + 1} / ${allViews.size})"
+            prevButton.isEnabled = index > 0
+            nextButton.isEnabled = index < allViews.size - 1
+        }
+    }
+
+    private fun formatBody(text: String?): String {
+        if (text == null) return ""
+        val trimmed = text.trim()
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return text
+        return try {
+            prettyPrintJson(trimmed)
+        } catch (e: Exception) {
+            text
+        }
+    }
+
+    private fun prettyPrintJson(json: String): String {
+        val sb = StringBuilder()
+        var indent = 0
+        var inString = false
+        var escape = false
+        for (ch in json) {
+            if (escape) { sb.append(ch); escape = false; continue }
+            if (ch == '\\' && inString) { sb.append(ch); escape = true; continue }
+            if (ch == '"') { inString = !inString; sb.append(ch); continue }
+            if (inString) { sb.append(ch); continue }
+            when (ch) {
+                '{', '[' -> { sb.append(ch); sb.append('\n'); indent++; repeat(indent * 2) { sb.append(' ') } }
+                '}', ']' -> { sb.append('\n'); indent--; repeat(indent * 2) { sb.append(' ') }; sb.append(ch) }
+                ',' -> { sb.append(ch); sb.append('\n'); repeat(indent * 2) { sb.append(' ') } }
+                ':' -> sb.append(": ")
+                ' ', '\n', '\r', '\t' -> {}
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
     }
 }

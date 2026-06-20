@@ -20,14 +20,16 @@ class HttpHistoryPanel : JPanel() {
     var database: Database? = null
     var onRestartRequested: (() -> Unit)? = null
     var onClearCacheRequested: (() -> Unit)? = null
+    var activeConnectionProvider: (() -> Int)? = null
 
     private val serverStatusDot = StatusDot()
     private val serverStatusLabel = JLabel("--").apply {
         font = Design.Typography.labelMedium
         foreground = Design.Colors.onSurfaceVariant
     }
-    private val httpCountBadge = Design.createBadge("0", Design.Colors.tertiary)
-    private val scanCountBadge = Design.createBadge("0", Design.Colors.warning)
+    private val httpCountBadge = Design.createBadge("HTTP 0", Design.Colors.tertiary)
+    private val scanCountBadge = Design.createBadge("扫描 0", Design.Colors.warning)
+    private val connCountBadge = Design.createBadge("连 0", Design.Colors.primary)
 
     private val searchField = JTextField().apply {
         font = Design.Typography.bodyMedium
@@ -72,26 +74,20 @@ class HttpHistoryPanel : JPanel() {
             add(serverStatusDot)
             add(Box.createHorizontalStrut(6))
             add(serverStatusLabel)
-            add(Box.createHorizontalStrut(Design.Spacing.MD))
+            add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(httpCountBadge)
-            add(Box.createHorizontalStrut(4))
-            add(JLabel("HTTP").apply {
-                font = Design.Typography.labelSmall
-                foreground = Design.Colors.onSurfaceVariant
-            })
             add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(scanCountBadge)
-            add(Box.createHorizontalStrut(4))
-            add(JLabel("扫描").apply {
-                font = Design.Typography.labelSmall
-                foreground = Design.Colors.onSurfaceVariant
-            })
+            add(Box.createHorizontalStrut(Design.Spacing.SM))
+            add(connCountBadge)
             add(Box.createHorizontalGlue())
-            add(Design.createOutlinedButton("清缓存", Dimension(80, 30)).apply {
+            add(Design.createOutlinedButton("清空").apply {
+                toolTipText = "清除所有缓存数据"
                 addActionListener { onClearCacheRequested?.invoke() }
             })
             add(Box.createHorizontalStrut(Design.Spacing.SM))
-            add(Design.createFilledButton("重启", Dimension(60, 30)).apply {
+            add(Design.createFilledButton("重启").apply {
+                toolTipText = "重启 MCP 服务器"
                 addActionListener { onRestartRequested?.invoke() }
             })
         }
@@ -137,17 +133,26 @@ class HttpHistoryPanel : JPanel() {
             tableHeader.font = Design.Typography.labelMedium
             tableHeader.foreground = Design.Colors.onSurface
             setDefaultRenderer(Any::class.java, HistoryTableCellRenderer())
-            autoResizeMode = JTable.AUTO_RESIZE_LAST_COLUMN
+            autoResizeMode = JTable.AUTO_RESIZE_OFF
         }
 
         table.columnModel.apply {
-            getColumn(0).preferredWidth = 70;  getColumn(0).maxWidth = 70
-            getColumn(1).preferredWidth = 55;  getColumn(1).maxWidth = 55
-            getColumn(2).preferredWidth = 500
-            getColumn(3).preferredWidth = 90;  getColumn(3).maxWidth = 90
-            getColumn(4).preferredWidth = 75;  getColumn(4).maxWidth = 75
-            getColumn(5).preferredWidth = 45;  getColumn(5).maxWidth = 45
+            getColumn(0).apply { minWidth = 55; preferredWidth = 55; maxWidth = 70 }
+            getColumn(1).apply { minWidth = 45; preferredWidth = 50; maxWidth = 55 }
+            // column 2 = URL, managed by ComponentListener below
+            getColumn(3).apply { minWidth = 55; preferredWidth = 65; maxWidth = 75 }
+            getColumn(4).apply { minWidth = 60; preferredWidth = 65; maxWidth = 75 }
+            getColumn(5).apply { minWidth = 35; preferredWidth = 38; maxWidth = 45 }
         }
+
+        table.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) {
+                val fixedTotal = (0..5).filter { it != 2 }.sumOf { table.columnModel.getColumn(it).preferredWidth }
+                val urlWidth = maxOf(80, table.width - fixedTotal)
+                table.columnModel.getColumn(2).preferredWidth = urlWidth
+                table.columnModel.getColumn(2).width = urlWidth
+            }
+        })
 
         table.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -162,9 +167,14 @@ class HttpHistoryPanel : JPanel() {
     }
 
     private fun openDetail(id: Int) {
-        val entry = database?.getProxyHttpDetail(listOf(id))?.firstOrNull() ?: return
-        val dialog = HttpDetailDialog(this, entry)
-        dialog.isVisible = true
+        val db = database ?: return
+        CoroutineScope(Dispatchers.IO).launch {
+            val entry = db.getProxyHttpDetail(listOf(id), includeDuplicates = true).firstOrNull() ?: return@launch
+            SwingUtilities.invokeLater {
+                val dialog = HttpDetailDialog(this@HttpHistoryPanel, entry)
+                dialog.isVisible = true
+            }
+        }
     }
 
     // ── 搜索防抖 ────────────────────────────────────────────────────────
@@ -187,13 +197,15 @@ class HttpHistoryPanel : JPanel() {
     fun loadData() {
         val db = database ?: return
         val filter = searchField.text.trim()
+        val connCount = activeConnectionProvider?.invoke() ?: 0
         CoroutineScope(Dispatchers.IO).launch {
             val rows = db.queryProxyHttp(filter = filter, limit = 500)
             val stats = db.stats()
             SwingUtilities.invokeLater {
                 updateTable(rows)
-                httpCountBadge.text = stats.proxyHttpCount.toString()
-                scanCountBadge.text = stats.scannerIssueCount.toString()
+                httpCountBadge.text = "HTTP ${stats.proxyHttpCount}"
+                scanCountBadge.text = "扫描 ${stats.scannerIssueCount}"
+                connCountBadge.text = "连 $connCount"
             }
         }
     }
@@ -204,7 +216,7 @@ class HttpHistoryPanel : JPanel() {
         for (row in rows) {
             val contentType = row.contentType?.substringBefore(";")?.substringAfterLast("/")?.take(12) ?: ""
             val time = timeFmt.format(Date(row.capturedAt))
-            val hits = if (row.hitCount > 1) row.hitCount.toString() else ""
+            val hits = row.hitCount.toString()
             tableModel.addRow(arrayOf(row.method, row.status?.toString() ?: "?", row.url, contentType, time, hits))
             rowIds.add(row.id)
         }
@@ -242,8 +254,8 @@ private class HistoryTableCellRenderer : DefaultTableCellRenderer() {
     private val statusGreen  = Color(0x2E7D32)
     private val statusOrange = Color(0xE65100)
     private val statusRed    = Color(0xB71C1C)
-    private val even         = UIManager.getColor("List.background")        ?: Color.WHITE
-    private val odd          = UIManager.getColor("List.alternateRowColor") ?: Color(0xFAFAFA)
+    private val even         = Design.Colors.listBackground
+    private val odd          = Design.Colors.surface
 
     override fun getTableCellRendererComponent(
         table: JTable, value: Any?, isSelected: Boolean, hasFocus: Boolean, row: Int, column: Int

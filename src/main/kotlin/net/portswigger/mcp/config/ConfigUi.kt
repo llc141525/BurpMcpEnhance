@@ -78,6 +78,7 @@ class ConfigUi(
         activeConnectionProvider: (() -> Int)? = null
     ) {
         httpHistoryPanel.database = database as? Database
+        httpHistoryPanel.activeConnectionProvider = activeConnectionProvider
         httpHistoryPanel.onRestartRequested = { restartServerListener?.invoke() }
         httpHistoryPanel.onClearCacheRequested = {
             val result = Dialogs.showConfirmDialog(
