@@ -3,6 +3,7 @@ package net.portswigger.mcp.tools
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.db.Database
+import java.util.Locale
 
 @Serializable
 data class DiffProxyResponses(
@@ -37,11 +38,21 @@ fun Server.registerDiffTools(database: Database) {
             e2.responseBody?.let { append(it) }
         }
 
-        computeDiff(
+        val semantic = computeSemanticSummary(e1.responseBody, e2.responseBody, e1.status, e2.status, e1.contentType, e2.contentType)
+        val lineDiff = computeDiff(
             r1, r2,
             label1 = "ID:$id1 ${e1.method} ${e1.url}",
             label2 = "ID:$id2 ${e2.method} ${e2.url}"
         )
+        if (semantic == "Responses are semantically identical." && lineDiff == "Responses are identical.") {
+            lineDiff
+        } else {
+            buildString {
+                appendLine(semantic)
+                appendLine()
+                append(lineDiff)
+            }.trimEnd()
+        }
     }
 }
 
@@ -73,4 +84,65 @@ internal fun computeDiff(text1: String, text2: String, label1: String = "Respons
             appendLine("\n(diff capped at 50 lines per side — responses differ significantly)")
         }
     }.trimEnd()
+}
+
+internal fun computeSemanticSummary(
+    body1: String?,
+    body2: String?,
+    status1: Int?,
+    status2: Int?,
+    contentType1: String?,
+    contentType2: String?
+): String {
+    val changes = mutableListOf<String>()
+    if (status1 != status2) {
+        changes.add("Status changed: ${status1 ?: "unknown"} -> ${status2 ?: "unknown"}")
+    }
+    val normalizedType1 = contentType1?.substringBefore(";")?.trim()
+    val normalizedType2 = contentType2?.substringBefore(";")?.trim()
+    if (normalizedType1 != normalizedType2) {
+        changes.add("Content-Type changed: ${normalizedType1 ?: "unknown"} -> ${normalizedType2 ?: "unknown"}")
+    }
+
+    val normalizedBody1 = body1.orEmpty().trim()
+    val normalizedBody2 = body2.orEmpty().trim()
+    if (normalizedBody1.length != normalizedBody2.length) {
+        changes.add("Body length: ${normalizedBody1.length} -> ${normalizedBody2.length}")
+    }
+
+    val jsonKeys1 = extractTopLevelJsonKeys(normalizedBody1)
+    val jsonKeys2 = extractTopLevelJsonKeys(normalizedBody2)
+    if (jsonKeys1 != null && jsonKeys2 != null) {
+        val removed = (jsonKeys1 - jsonKeys2).sorted()
+        val added = (jsonKeys2 - jsonKeys1).sorted()
+        if (removed.isNotEmpty()) changes.add("JSON keys removed: ${removed.joinToString(", ")}")
+        if (added.isNotEmpty()) changes.add("JSON keys added: ${added.joinToString(", ")}")
+    }
+
+    val sensitive1 = countSensitiveMarkers(normalizedBody1)
+    val sensitive2 = countSensitiveMarkers(normalizedBody2)
+    if (sensitive1 != sensitive2) {
+        changes.add("Sensitive markers: $sensitive1 -> $sensitive2")
+    }
+
+    return if (changes.isEmpty()) {
+        "Responses are semantically identical."
+    } else {
+        buildString {
+            appendLine("Semantic summary:")
+            changes.forEach { appendLine("- $it") }
+        }.trimEnd()
+    }
+}
+
+private fun extractTopLevelJsonKeys(body: String): Set<String>? {
+    if (!(body.startsWith("{") && body.endsWith("}"))) return null
+    val regex = Regex("\"([^\"]+)\"\\s*:")
+    return regex.findAll(body).map { it.groupValues[1] }.toSet().takeIf { it.isNotEmpty() }
+}
+
+private fun countSensitiveMarkers(body: String): Int {
+    val lowered = body.lowercase(Locale.ROOT)
+    val markers = listOf("token", "secret", "password", "session", "cookie", "authorization")
+    return markers.count { lowered.contains(it) }
 }

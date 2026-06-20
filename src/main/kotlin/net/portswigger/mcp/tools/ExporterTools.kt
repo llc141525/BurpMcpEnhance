@@ -9,7 +9,11 @@ import net.portswigger.mcp.exporter.Exporter
 data class ListProxyHttpHistory(override val count: Int = 30, override val offset: Int = 0) : Paginated
 
 @Serializable
-data class GetProxyHttpDetail(val ids: String, val include_duplicates: Boolean = false)
+data class GetProxyHttpDetail(
+    val ids: String,
+    val include_duplicates: Boolean = false,
+    val include_body: Boolean = false
+)
 
 @Serializable
 data class ListSecurityCandidates(
@@ -106,6 +110,7 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
     mcpTool<GetProxyHttpDetail>(
         "Gets proxy HTTP history details by IDs. Provide comma-separated IDs (e.g., \"1,2,3\"). " +
         "Prefer list_security_candidates first. This returns request and response evidence for the specified entries. " +
+        "By default, bodies are omitted to save tokens. Re-call with include_body=true when you need the body. " +
         "Set include_duplicates=true to also retrieve raw duplicate requests captured for the same endpoint " +
         "(e.g., multiple login attempts or credential-stuffing requests to the same URL). " +
         "Call list_proxy_http_history first to get IDs, then drill down with this tool."
@@ -132,18 +137,24 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                 appendLine()
                 appendLine("--- Request ---")
                 entry.requestHeaders?.let { appendLine(it) }
-                if (!entry.requestBody.isNullOrBlank()) {
+                if (include_body && !entry.requestBody.isNullOrBlank()) {
                     appendLine()
                     append(entry.requestBody)
+                } else if (!entry.requestBody.isNullOrBlank()) {
+                    appendLine()
+                    appendLine("Request body omitted. Re-run with include_body=true to inspect it.")
                 }
                 appendLine()
                 appendLine("--- Response ---")
                 entry.responseHeaders?.let { appendLine(it) }
-                if (!entry.responseBody.isNullOrBlank()) {
+                if (include_body && !entry.responseBody.isNullOrBlank()) {
                     appendLine()
                     append(entry.responseBody)
                     appendLine()
                     appendLine("[Body truncated to 8KB]")
+                } else if (!entry.responseBody.isNullOrBlank()) {
+                    appendLine()
+                    appendLine("Response body omitted. Re-run with include_body=true to inspect it.")
                 }
                 if (entry.duplicates.isNotEmpty()) {
                     appendLine()

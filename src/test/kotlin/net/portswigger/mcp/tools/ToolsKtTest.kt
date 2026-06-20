@@ -1449,6 +1449,51 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `get_proxy_http_detail should omit bodies by default`() {
+            val db = serverManager.database ?: fail("Database should be initialized")
+            db.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(
+                        31, "POST", 200, "http://example.com/api/login",
+                        "Content-Type: application/json", """{"user":"alice"}""",
+                        "HTTP/1.1 200 OK", """{"token":"secret"}""",
+                        "application/json", null, System.currentTimeMillis()
+                    )
+                )
+            )
+
+            runBlocking {
+                val result = client.callTool("get_proxy_http_detail", mapOf("ids" to "31"))
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Request body omitted"), "Expected request omission notice: $text")
+                assertTrue(text.contains("Response body omitted"), "Expected response omission notice: $text")
+                assertFalse(text.contains("{\"token\":\"secret\"}"), "Body should not be in default output: $text")
+            }
+        }
+
+        @Test
+        fun `get_proxy_http_detail should include bodies when requested`() {
+            val db = serverManager.database ?: fail("Database should be initialized")
+            db.upsertProxyHttpHistory(
+                listOf(
+                    ProxyHttpEntry(
+                        32, "POST", 200, "http://example.com/api/login",
+                        "Content-Type: application/json", """{"user":"alice"}""",
+                        "HTTP/1.1 200 OK", """{"token":"secret"}""",
+                        "application/json", null, System.currentTimeMillis()
+                    )
+                )
+            )
+
+            runBlocking {
+                val result = client.callTool("get_proxy_http_detail", mapOf("ids" to "32", "include_body" to true))
+                val text = result.expectTextContent()
+                assertTrue(text.contains("{\"user\":\"alice\"}"), "Request body should be included: $text")
+                assertTrue(text.contains("{\"token\":\"secret\"}"), "Response body should be included: $text")
+            }
+        }
+
+        @Test
         fun `list_security_candidates should return ranked summary output`() {
             val db = serverManager.database ?: fail("Database should be initialized")
             db.upsertProxyHttpHistory(
@@ -1671,6 +1716,7 @@ class ToolsKtTest {
                 val result = client.callTool("diff_proxy_responses", mapOf("id1" to "203", "id2" to "204"))
                 delay(100)
                 val text = result.expectTextContent()
+                assertTrue(text.contains("Semantic summary:"), "Diff should start with semantic summary: $text")
                 assertTrue(text.contains("admin") || text.contains("user") || text.contains("REMOVED") || text.contains("ADDED"),
                     "Diff should show what changed: $text")
             }
