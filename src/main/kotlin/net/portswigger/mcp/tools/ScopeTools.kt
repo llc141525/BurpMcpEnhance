@@ -131,6 +131,11 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
 internal fun normalizeScanRequestContent(content: String): String =
     content.replace("\r", "").replace("\n", "\r\n")
 
+/**
+ * Builds the raw HTTP request text to audit. When [content] is non-blank it is returned with line
+ * endings normalized to CRLF (preserving the method, headers, cookies, and body); [host] and [path]
+ * are used only to synthesize the bare-GET fallback when no [content] is supplied.
+ */
 internal fun buildScanRequestText(content: String?, host: String, path: String): String =
     if (!content.isNullOrBlank()) {
         normalizeScanRequestContent(content)

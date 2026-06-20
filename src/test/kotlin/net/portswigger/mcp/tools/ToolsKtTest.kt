@@ -1318,6 +1318,7 @@ class ToolsKtTest {
                 capturedScanRequestText.captured.startsWith("GET /api/user?id=1 HTTP/1.1"),
                 "Fallback audited request should be a bare GET: ${capturedScanRequestText.captured}"
             )
+            verify(exactly = 1) { audit.addRequestResponse(any()) }
         }
     }
 
