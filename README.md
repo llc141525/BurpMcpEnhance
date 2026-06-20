@@ -326,6 +326,28 @@ http://127.0.0.1:9876/mcp
 | `./gradlew test` | 运行测试 |
 | `./gradlew shadowJar` | 仅构建主 JAR |
 
+## 自动发布
+
+仓库内置了 GitHub Actions 发布流水线：
+
+- 推送 tag `v*` 时自动构建并发布 Release
+- 也支持在 GitHub Actions 页面手动触发
+
+推荐发布流程：
+
+```bash
+git tag v1.2.2
+git push origin master
+git push origin v1.2.2
+```
+
+流水线会自动：
+
+- 使用 Java 21 构建
+- 执行 `./gradlew embedProxyJar`
+- 上传 `build/libs/burp-mcp-all.jar`
+- 创建或更新对应版本 Release
+
 ## 开发
 
 工具定义主要位于：
@@ -524,3 +546,25 @@ Monitor server/cache state and adjust runtime behavior from the built-in dashboa
 | `./gradlew embedProxyJar` | Build the distributable JAR |
 | `./gradlew test` | Run tests |
 | `./gradlew shadowJar` | Build the main JAR only |
+
+## Automated Releases
+
+This repository includes a GitHub Actions release workflow:
+
+- pushing a `v*` tag creates a Release automatically
+- you can also trigger it manually from the Actions tab
+
+Recommended flow:
+
+```bash
+git tag v1.2.2
+git push origin master
+git push origin v1.2.2
+```
+
+The workflow will:
+
+- build with Java 21
+- run `./gradlew embedProxyJar`
+- upload `build/libs/burp-mcp-all.jar`
+- create or update the matching GitHub Release

@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.2.2"
+        required: true
+      release_name:
+        description: "Release title"
+        required: false
+      make_latest:
+        description: "Mark as latest release"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+            RELEASE_NAME="${{ github.event.inputs.release_name }}"
+            MAKE_LATEST="${{ github.event.inputs.make_latest }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            RELEASE_NAME=""
+            MAKE_LATEST="true"
+          fi
+
+          if [[ -z "$RELEASE_NAME" ]]; then
+            RELEASE_NAME="$TAG"
+          fi
+
+          if [[ "$MAKE_LATEST" == "true" ]]; then
+            LATEST_FLAG="true"
+          else
+            LATEST_FLAG="false"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          echo "make_latest=$LATEST_FLAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build distributable JAR
+        run: ./gradlew embedProxyJar
+
+      - name: Verify artifact
+        run: ls -lh build/libs/burp-mcp-all.jar
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          VERSION="${{ steps.meta.outputs.tag }}"
+          cat > release-notes.md <<EOF
+          ## ${VERSION}
+
+          ### 下载文件
+
+          - \`burp-mcp-all.jar\`
+
+          ### 使用方式
+
+          1. 在 Burp Suite -> Extensions 中加载 \`burp-mcp-all.jar\`
+          2. 在 Burp 的 MCP 面板启用服务
+          3. 在 MCP 客户端中连接 \`http://127.0.0.1:9876/mcp\`
+
+          ### 说明
+
+          - 推荐使用 Streamable HTTP
+          - 该构建产物由 GitHub Actions 自动生成
+          - 详细更新内容请查看仓库 README 与提交记录
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.release_name }}
+          body_path: release-notes.md
+          files: build/libs/burp-mcp-all.jar
+          generate_release_notes: true
+          make_latest: ${{ steps.meta.outputs.make_latest }}
