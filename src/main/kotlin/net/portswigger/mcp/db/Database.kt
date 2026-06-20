@@ -355,6 +355,55 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
+    fun queryProxyHttp(filter: String = "", limit: Int = 500): List<HttpHistoryRow> {
+        connection.autoCommit = true
+        val hasFilter = filter.isNotBlank()
+        val sql = if (hasFilter) {
+            """SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
+               FROM proxy_http_history
+               WHERE url LIKE ? OR method LIKE ? OR CAST(status AS TEXT) LIKE ?
+               ORDER BY captured_at DESC LIMIT ?"""
+        } else {
+            """SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
+               FROM proxy_http_history
+               ORDER BY captured_at DESC LIMIT ?"""
+        }
+        val stmt = connection.prepareStatement(sql)
+        try {
+            if (hasFilter) {
+                val like = "%$filter%"
+                stmt.setString(1, like)
+                stmt.setString(2, like)
+                stmt.setString(3, like)
+                stmt.setInt(4, limit)
+            } else {
+                stmt.setInt(1, limit)
+            }
+            val rs = stmt.executeQuery()
+            try {
+                val results = mutableListOf<HttpHistoryRow>()
+                while (rs.next()) {
+                    results.add(
+                        HttpHistoryRow(
+                            id = rs.getInt("id"),
+                            method = rs.getString("method"),
+                            status = rs.getObject("status") as? Int,
+                            url = rs.getString("url"),
+                            contentType = rs.getString("content_type"),
+                            capturedAt = rs.getLong("captured_at"),
+                            hitCount = rs.getInt("hit_count")
+                        )
+                    )
+                }
+                return results
+            } finally {
+                rs.close()
+            }
+        } finally {
+            stmt.close()
+        }
+    }
+
     fun getProxyHttpDetail(ids: List<Int>, includeDuplicates: Boolean = false): List<ProxyHttpEntry> {
         if (ids.isEmpty()) return emptyList()
         connection.autoCommit = true

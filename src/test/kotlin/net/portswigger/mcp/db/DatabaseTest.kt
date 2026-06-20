@@ -409,4 +409,68 @@ class DatabaseTest {
         val inclusive = database.listSecurityCandidates(minScore = 30, includeLowValue = true)
         assertEquals(listOf(12, 13, 11), inclusive.map { it.id })
     }
+
+    @Test
+    fun `queryProxyHttp returns all rows when no filter`() {
+        database.upsertProxyHttpHistory(listOf(
+            ProxyHttpEntry(1, "GET", 200, "http://example.com/api/users", null, null, null, null, "application/json", null, 1000L),
+            ProxyHttpEntry(2, "POST", 401, "http://example.com/auth/login", null, null, null, null, "application/json", null, 2000L)
+        ))
+
+        val rows = database.queryProxyHttp(filter = "", limit = 500)
+        assertEquals(2, rows.size)
+        assertEquals(2, rows[0].id)  // DESC by captured_at
+        assertEquals("POST", rows[0].method)
+        assertEquals(401, rows[0].status)
+        assertEquals(2000L, rows[0].capturedAt)
+        assertEquals(1, rows[1].id)
+        assertEquals("GET", rows[1].method)
+    }
+
+    @Test
+    fun `queryProxyHttp filters by URL substring`() {
+        database.upsertProxyHttpHistory(listOf(
+            ProxyHttpEntry(1, "GET", 200, "http://example.com/api/users", null, null, null, null, "application/json", null, 1000L),
+            ProxyHttpEntry(2, "POST", 200, "http://example.com/auth/login", null, null, null, null, "application/json", null, 2000L)
+        ))
+
+        val rows = database.queryProxyHttp(filter = "api", limit = 500)
+        assertEquals(1, rows.size)
+        assertEquals("GET", rows[0].method)
+        assertTrue(rows[0].url.contains("api"))
+    }
+
+    @Test
+    fun `queryProxyHttp filters by method`() {
+        database.upsertProxyHttpHistory(listOf(
+            ProxyHttpEntry(1, "GET", 200, "http://example.com/a", null, null, null, null, null, null, 1000L),
+            ProxyHttpEntry(2, "POST", 200, "http://example.com/b", null, null, null, null, null, null, 2000L)
+        ))
+
+        val rows = database.queryProxyHttp(filter = "POST", limit = 500)
+        assertEquals(1, rows.size)
+        assertEquals("POST", rows[0].method)
+    }
+
+    @Test
+    fun `queryProxyHttp filters by status code`() {
+        database.upsertProxyHttpHistory(listOf(
+            ProxyHttpEntry(1, "GET", 200, "http://example.com/a", null, null, null, null, null, null, 1000L),
+            ProxyHttpEntry(2, "GET", 404, "http://example.com/b", null, null, null, null, null, null, 2000L)
+        ))
+
+        val rows = database.queryProxyHttp(filter = "404", limit = 500)
+        assertEquals(1, rows.size)
+        assertEquals(404, rows[0].status)
+    }
+
+    @Test
+    fun `queryProxyHttp respects limit`() {
+        database.upsertProxyHttpHistory((1..10).map { i ->
+            ProxyHttpEntry(i, "GET", 200, "http://example.com/$i", null, null, null, null, null, null, i.toLong())
+        })
+
+        val rows = database.queryProxyHttp(filter = "", limit = 3)
+        assertEquals(3, rows.size)
+    }
 }
