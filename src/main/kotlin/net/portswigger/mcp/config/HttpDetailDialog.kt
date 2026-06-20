@@ -5,6 +5,8 @@ import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.Font
+import java.awt.event.ActionEvent
+import java.awt.event.KeyEvent
 import javax.swing.*
 
 class HttpDetailDialog(
@@ -20,6 +22,12 @@ class HttpDetailDialog(
 
         add(buildTabs(), BorderLayout.CENTER)
         add(buildFooter(), BorderLayout.SOUTH)
+
+        rootPane.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+            .put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "escape")
+        rootPane.actionMap.put("escape", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) = dispose()
+        })
 
         pack()
         setLocationRelativeTo(parent)
