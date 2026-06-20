@@ -90,6 +90,10 @@ class ConfigUi(
                 httpHistoryPanel.loadData()
             }
         }
+        httpHistoryPanel.onReimportRequested = {
+            (exporter as? net.portswigger.mcp.exporter.Exporter)?.reimport()
+            javax.swing.Timer(1500) { httpHistoryPanel.loadData() }.apply { isRepeats = false; start() }
+        }
         httpHistoryPanel.startRefreshing()
     }
 

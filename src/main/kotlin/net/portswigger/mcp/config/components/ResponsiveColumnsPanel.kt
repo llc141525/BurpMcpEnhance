@@ -75,13 +75,15 @@ class ResponsiveColumnsPanel(private val leftPanel: JPanel, private val rightPan
 
                 rightPanel.border = BorderFactory.createEmptyBorder(padding, Design.Spacing.SM, padding, padding)
 
-                add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftScroll, rightPanel).apply {
+                val splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftScroll, rightPanel).apply {
                     resizeWeight = 0.43
                     dividerSize = 8
                     border = null
                     isContinuousLayout = true
-                    setDividerLocation(530)
-                }, BorderLayout.CENTER)
+                }
+            // Defer proportion-based divider until the component has actual pixel dimensions
+            javax.swing.SwingUtilities.invokeLater { splitPane.setDividerLocation(0.43) }
+            add(splitPane, BorderLayout.CENTER)
             }
 
             Layout.SINGLE_COLUMN -> {

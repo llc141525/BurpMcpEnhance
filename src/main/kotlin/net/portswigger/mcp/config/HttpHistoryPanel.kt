@@ -20,6 +20,7 @@ class HttpHistoryPanel : JPanel() {
     var database: Database? = null
     var onRestartRequested: (() -> Unit)? = null
     var onClearCacheRequested: (() -> Unit)? = null
+    var onReimportRequested: (() -> Unit)? = null
     var activeConnectionProvider: (() -> Int)? = null
 
     private val serverStatusDot = StatusDot()
@@ -51,6 +52,7 @@ class HttpHistoryPanel : JPanel() {
     private var searchTimer: Timer? = null
     private var refreshTimer: Timer? = null
     private val timeFmt = SimpleDateFormat("HH:mm:ss")
+    private lateinit var tableScrollPane: JScrollPane
 
     init {
         layout = BorderLayout()
@@ -81,6 +83,11 @@ class HttpHistoryPanel : JPanel() {
             add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(connCountBadge)
             add(Box.createHorizontalGlue())
+            add(Design.createOutlinedButton("导入").apply {
+                toolTipText = "重新导入 Burp 历史记录"
+                addActionListener { onReimportRequested?.invoke() }
+            })
+            add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(Design.createOutlinedButton("清空").apply {
                 toolTipText = "清除所有缓存数据"
                 addActionListener { onClearCacheRequested?.invoke() }
@@ -111,12 +118,15 @@ class HttpHistoryPanel : JPanel() {
             add(searchPanel, BorderLayout.NORTH)
 
             configureTable()
-            val scrollPane = JScrollPane(table).apply {
+            tableScrollPane = JScrollPane(table).apply {
                 border = BorderFactory.createLineBorder(Design.Colors.outlineVariant, 1)
                 verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
                 horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
             }
-            add(scrollPane, BorderLayout.CENTER)
+            tableScrollPane.addComponentListener(object : java.awt.event.ComponentAdapter() {
+                override fun componentResized(e: java.awt.event.ComponentEvent) = resizeUrlColumn()
+            })
+            add(tableScrollPane, BorderLayout.CENTER)
         }
     }
 
@@ -145,15 +155,6 @@ class HttpHistoryPanel : JPanel() {
             getColumn(4).apply { minWidth = 58; preferredWidth = 62; maxWidth = 72 }    // 时间
             getColumn(5).apply { minWidth = 28; preferredWidth = 32; maxWidth = 40 }    // 命中
         }
-
-        table.addComponentListener(object : java.awt.event.ComponentAdapter() {
-            override fun componentResized(e: java.awt.event.ComponentEvent) {
-                val fixedTotal = 50 + 42 + 50 + 62 + 32  // Method + Status + Type + Time + Hit
-                val urlWidth = maxOf(80, table.width - fixedTotal)
-                table.columnModel.getColumn(2).preferredWidth = urlWidth
-                table.columnModel.getColumn(2).width = urlWidth
-            }
-        })
 
         table.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -196,6 +197,18 @@ class HttpHistoryPanel : JPanel() {
         searchTimer = Timer(300) { loadData() }.apply { isRepeats = false; start() }
     }
 
+    private fun resizeUrlColumn() {
+        val fixed = 50 + 42 + 50 + 62 + 32   // Method + Status + Type + Time + Hit
+        val available = if (::tableScrollPane.isInitialized) tableScrollPane.viewport.width else 0
+        if (available > 0) {
+            val urlWidth = maxOf(100, available - fixed)
+            table.columnModel.getColumn(2).let {
+                it.preferredWidth = urlWidth
+                it.width = urlWidth
+            }
+        }
+    }
+
     // ── 数据加载 ────────────────────────────────────────────────────────
 
     fun loadData() {
@@ -224,6 +237,7 @@ class HttpHistoryPanel : JPanel() {
             tableModel.addRow(arrayOf(row.method, row.status?.toString() ?: "?", row.url, contentType, time, hits))
             rowIds.add(row.id)
         }
+        resizeUrlColumn()
     }
 
     // ── 外部 API ────────────────────────────────────────────────────────
@@ -242,6 +256,7 @@ class HttpHistoryPanel : JPanel() {
         loadData()
         refreshTimer?.stop()
         refreshTimer = Timer(5000) { loadData() }.apply { start() }
+        SwingUtilities.invokeLater { resizeUrlColumn() }
     }
 
     fun stopRefreshing() {

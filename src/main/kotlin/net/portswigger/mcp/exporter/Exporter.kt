@@ -107,6 +107,19 @@ class Exporter(
         job = null
     }
 
+    fun reimport() {
+        lastProxyTimestampMs = 0L
+        lastKnownScannerIssueCount = null
+        scope.launch {
+            try {
+                exportProxyHttpHistory()
+                exportScannerIssues()
+            } catch (e: Exception) {
+                api.logging().logToError("MCP Exporter reimport error: ${e.message}")
+            }
+        }
+    }
+
     fun shutdown() {
         stop()
         scope.cancel()
