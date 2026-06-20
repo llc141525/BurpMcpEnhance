@@ -13,9 +13,16 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_BALANCED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_OFF
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_RELAXED
+import net.portswigger.mcp.config.EXPORT_NOISE_MODE_STRICT
 import net.portswigger.mcp.config.McpConfig
+import net.portswigger.mcp.config.normalizeExportNoiseMode
 import net.portswigger.mcp.db.Database
 import net.portswigger.mcp.exporter.Exporter
+import net.portswigger.mcp.plugins.buildBurpInfoSummary
+import net.portswigger.mcp.plugins.collectBurpPluginInventory
 import net.portswigger.mcp.queue.FileQueue
 import net.portswigger.mcp.queue.MessageQueue
 import net.portswigger.mcp.schema.toSerializableForm
@@ -354,40 +361,55 @@ fun Server.registerTools(
         }
     }
 
+    mcpTool("get_export_noise_mode",
+        "Returns the current proxy history export noise mode used by the Burp MCP cache. " +
+        "Modes: 'off', 'relaxed', 'balanced', 'strict'. Also reports whether exporting is restricted to in-scope requests."
+    ) {
+        buildString {
+            appendLine("mode=${config.exportNoiseMode}")
+            appendLine("in_scope_only=${config.exportInScopeOnly}")
+            append("description=${config.exportNoiseModeDescription()}")
+        }
+    }
+
+    mcpTool<SetExportNoiseMode>(
+        "Sets the proxy history export noise mode for the Burp MCP cache. " +
+        "mode must be one of: 'off', 'relaxed', 'balanced', 'strict'. " +
+        "Optional inScopeOnly overrides whether only Burp Scope requests are exported."
+    ) {
+        val normalizedMode = normalizeExportNoiseMode(mode)
+        if (mode.lowercase() !in setOf(
+                EXPORT_NOISE_MODE_OFF,
+                EXPORT_NOISE_MODE_RELAXED,
+                EXPORT_NOISE_MODE_BALANCED,
+                EXPORT_NOISE_MODE_STRICT
+            )
+        ) {
+            return@mcpTool "Invalid mode: $mode. Use 'off', 'relaxed', 'balanced', or 'strict'."
+        }
+
+        config.exportNoiseMode = normalizedMode
+        if (inScopeOnly != null) {
+            config.exportInScopeOnly = inScopeOnly
+        }
+
+        buildString {
+            appendLine("Export noise mode updated.")
+            appendLine("mode=${config.exportNoiseMode}")
+            appendLine("in_scope_only=${config.exportInScopeOnly}")
+            append("description=${config.exportNoiseModeDescription()}")
+        }
+    }
+
     mcpTool("get_burp_info",
         "Returns Burp Suite edition, version, and a summary of available MCP tool categories. " +
         "Use this first in a session to understand what capabilities are available. " +
         "Pro-only tools (start_active_scan, get_scanner_issues, generate_collaborator_payload, get_collaborator_interactions) " +
-        "are listed separately and only present in Burp Suite Professional."
+        "are listed separately and only present in Burp Suite Professional. " +
+        "Also reports third-party plugin visibility when Burp exposes it or when configured in the MCP UI."
     ) {
-        val version = api.burpSuite().version()
-        val edition = version.edition()
-        val isPro = edition == BurpSuiteEdition.PROFESSIONAL
-
-        buildString {
-            appendLine("Edition: $edition")
-            appendLine("Version: $version")
-            appendLine()
-            appendLine("Available tool categories:")
-            appendLine("  HTTP: send_http1_request, send_http2_request, create_repeater_tab, send_to_intruder")
-            appendLine("  Proxy: get_proxy_http_history (+ regex filter), get_proxy_websocket_history")
-            appendLine("  Scope: manage_scope, get_site_map")
-            appendLine("  Site map: get_site_map")
-            appendLine("  Diff: diff_proxy_responses")
-            appendLine("  GraphQL: graphql_introspect, graphql_list_types, graphql_describe_type, graphql_query")
-            appendLine("  Utilities: url_encode, url_decode, base64_encode, base64_decode, generate_random_string")
-            appendLine("  Editor: get_active_editor_contents, set_active_editor_contents")
-            appendLine("  Config: manage_auto_approve_targets, set_task_execution_engine_state, set_proxy_intercept_state")
-            if (isPro) {
-                appendLine()
-                appendLine("Pro-only tools:")
-                appendLine("  Scanner: start_active_scan, get_scanner_issues")
-                appendLine("  Collaborator: generate_collaborator_payload, get_collaborator_interactions")
-            } else {
-                appendLine()
-                appendLine("Pro-only tools: not available (requires Burp Suite Professional)")
-            }
-        }.trimEnd()
+        val inventory = collectBurpPluginInventory(api, config.getKnownBurpPluginsList())
+        buildBurpInfoSummary(api, inventory)
     }
 }
 
@@ -511,4 +533,10 @@ data class GetCollaboratorInteractions(
 data class ManageAutoApproveTargets(
     val action: String,
     val target: String? = null
+)
+
+@Serializable
+data class SetExportNoiseMode(
+    val mode: String,
+    val inScopeOnly: Boolean? = null
 )

@@ -199,6 +199,7 @@ object Design {
             val textFitSize = calculateTextFitSize(this)
             minimumSize = textFitSize
             preferredSize = customSize ?: textFitSize
+            maximumSize = preferredSize
         }
     }
 
@@ -322,6 +323,42 @@ object Design {
                 font = Typography.titleMedium
                 foreground = Colors.onSurface
             }
+        }
+    }
+
+    fun createReadOnlyTextArea(
+        text: String = "",
+        font: Font = Typography.bodyMedium,
+        foreground: Color = Colors.onSurface,
+        columns: Int = 0
+    ): JTextArea {
+        return JTextArea(text).apply {
+            this.font = font
+            this.foreground = foreground
+            this.columns = columns
+            lineWrap = true
+            wrapStyleWord = true
+            isEditable = false
+            isFocusable = false
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder()
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+    }
+
+    fun styleInputTextArea(textArea: JTextArea, rows: Int = 4) {
+        textArea.apply {
+            font = Typography.bodyMedium
+            foreground = Colors.onSurface
+            background = Colors.listBackground
+            caretColor = Colors.onSurface
+            lineWrap = true
+            wrapStyleWord = true
+            this.rows = rows
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(Colors.outlineVariant, 1),
+                EmptyBorder(Spacing.SM, Spacing.MD, Spacing.SM, Spacing.MD)
+            )
         }
     }
 }

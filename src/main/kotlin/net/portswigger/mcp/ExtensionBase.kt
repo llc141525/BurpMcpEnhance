@@ -44,6 +44,7 @@ class ExtensionBase : BurpExtension {
         val proxyJarManager = ProxyJarManager(api.logging())
 
         val configUi = ConfigUi(
+            api = api,
             config = config, providers = listOf(
                 ClaudeDesktopProvider(api.logging(), proxyJarManager),
                 ManualProxyInstallerProvider(api.logging(), proxyJarManager),

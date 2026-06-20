@@ -87,6 +87,20 @@ This:     AI query -> SQLite cache -> instant
 - Restart button -- no need to reload the extension
 - `manage_auto_approve_targets` -- single merged tool to add/remove/list/clear auto-approve targets
 
+## Screenshots
+
+### Request Detail Review
+
+Inspect captured requests in a focused detail view, including headers and body payloads.
+
+![Request detail demo](docs/images/request-detail-demo.png)
+
+### Dashboard & Server Settings
+
+Monitor cache/export status and adjust server behavior from the built-in control panel.
+
+![Dashboard demo](docs/images/dashboard-demo.png)
+
 ## Quick Start
 
 ### Prerequisites
@@ -374,6 +388,20 @@ mcpTool<MyToolArgs>("tool description") {
 - 全中文界面
 - 重启按钮 -- 不需要重载扩展
 - `manage_auto_approve_targets` -- 单一合并工具管理自动放行列表（add/remove/list/clear）
+
+## 项目展示
+
+### 请求详情查看
+
+可以在详情视图中直接检查捕获到的请求内容，包括请求头和请求体。
+
+![请求详情展示](docs/images/request-detail-demo.png)
+
+### 仪表板与服务配置
+
+内置控制面板可以实时查看缓存/导出状态，并调整服务端行为。
+
+![仪表板展示](docs/images/dashboard-demo.png)
 
 ## 快速开始
 

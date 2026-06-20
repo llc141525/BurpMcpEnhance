@@ -1723,6 +1723,90 @@ class ToolsKtTest {
         }
 
         @Test
+        fun `diff_proxy_responses should report auth hint and array count changes`() {
+            val db = serverManager.database ?: fail("Database required")
+            db.upsertProxyHttpHistory(listOf(
+                ProxyHttpEntry(
+                    205, "GET", 403, "http://example.com/diff-auth",
+                    null, null,
+                    "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json",
+                    "{\"message\":\"unauthorized\",\"data\":[]}",
+                    null, "application/json", System.currentTimeMillis()
+                ),
+                ProxyHttpEntry(
+                    206, "GET", 200, "http://example.com/diff-auth",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "{\"success\":true,\"data\":[{\"id\":1},{\"id\":2},{\"id\":3}]}",
+                    null, "application/json", System.currentTimeMillis()
+                )
+            ))
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "205", "id2" to "206"))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Status changed: 403 -> 200"), "Should detect status change: $text")
+                assertTrue(text.contains("Auth hint changed: auth_failure -> success"), "Should detect auth change: $text")
+                assertTrue(text.contains("JSON array data length: 0 -> 3"), "Should detect data array size change: $text")
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses should report sensitive markers and json key changes`() {
+            val db = serverManager.database ?: fail("Database required")
+            db.upsertProxyHttpHistory(listOf(
+                ProxyHttpEntry(
+                    207, "GET", 200, "http://example.com/diff-keys",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "{\"user\":\"alice\"}",
+                    null, "application/json", System.currentTimeMillis()
+                ),
+                ProxyHttpEntry(
+                    208, "GET", 200, "http://example.com/diff-keys",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "{\"user\":\"alice\",\"token\":\"abc\",\"password\":\"secret\"}",
+                    null, "application/json", System.currentTimeMillis()
+                )
+            ))
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "207", "id2" to "208"))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("JSON keys added: password, token"), "Should detect added keys: $text")
+                assertTrue(text.contains("Sensitive markers: 0 -> 3"), "Should detect sensitive marker increase: $text")
+            }
+        }
+
+        @Test
+        fun `diff_proxy_responses should report root json array length changes`() {
+            val db = serverManager.database ?: fail("Database required")
+            db.upsertProxyHttpHistory(listOf(
+                ProxyHttpEntry(
+                    209, "GET", 200, "http://example.com/diff-array",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "[]",
+                    null, "application/json", System.currentTimeMillis()
+                ),
+                ProxyHttpEntry(
+                    210, "GET", 200, "http://example.com/diff-array",
+                    null, null,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json",
+                    "[{\"id\":1},{\"id\":2}]",
+                    null, "application/json", System.currentTimeMillis()
+                )
+            ))
+            runBlocking {
+                val result = client.callTool("diff_proxy_responses", mapOf("id1" to "209", "id2" to "210"))
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("JSON array root length: 0 -> 2"), "Should detect root array change: $text")
+            }
+        }
+
+        @Test
         fun `diff_proxy_responses invalid id should return error`() {
             runBlocking {
                 val result = client.callTool("diff_proxy_responses", mapOf("id1" to "notanumber", "id2" to "999"))

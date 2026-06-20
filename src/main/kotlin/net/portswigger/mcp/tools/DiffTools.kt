@@ -1,6 +1,15 @@
 package net.portswigger.mcp.tools
 
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.Serializable
 import net.portswigger.mcp.db.Database
 import java.util.Locale
@@ -119,10 +128,26 @@ internal fun computeSemanticSummary(
         if (added.isNotEmpty()) changes.add("JSON keys added: ${added.joinToString(", ")}")
     }
 
+    val arrayLengthChanges = extractJsonArrayLengths(normalizedBody1).toMutableMap()
+    val arrayLengths2 = extractJsonArrayLengths(normalizedBody2)
+    for (field in (arrayLengthChanges.keys + arrayLengths2.keys).sorted()) {
+        val before = arrayLengthChanges[field]
+        val after = arrayLengths2[field]
+        if (before != null && after != null && before != after) {
+            changes.add("JSON array $field length: $before -> $after")
+        }
+    }
+
     val sensitive1 = countSensitiveMarkers(normalizedBody1)
     val sensitive2 = countSensitiveMarkers(normalizedBody2)
     if (sensitive1 != sensitive2) {
         changes.add("Sensitive markers: $sensitive1 -> $sensitive2")
+    }
+
+    val authHint1 = detectAuthHint(normalizedBody1)
+    val authHint2 = detectAuthHint(normalizedBody2)
+    if (authHint1 != authHint2) {
+        changes.add("Auth hint changed: ${authHint1.label} -> ${authHint2.label}")
     }
 
     return if (changes.isEmpty()) {
@@ -136,9 +161,79 @@ internal fun computeSemanticSummary(
 }
 
 private fun extractTopLevelJsonKeys(body: String): Set<String>? {
-    if (!(body.startsWith("{") && body.endsWith("}"))) return null
-    val regex = Regex("\"([^\"]+)\"\\s*:")
-    return regex.findAll(body).map { it.groupValues[1] }.toSet().takeIf { it.isNotEmpty() }
+    val jsonObject = parseJson(body) as? JsonObject ?: return null
+    return jsonObject.keys.takeIf { it.isNotEmpty() }
+}
+
+private fun extractJsonArrayLengths(body: String): Map<String, Int> {
+    val root = parseJson(body) ?: return emptyMap()
+    if (root is JsonArray) {
+        return mapOf("root" to root.size)
+    }
+    val obj = root as? JsonObject ?: return emptyMap()
+    val candidateFields = listOf("data", "rows", "list", "items", "records", "results")
+    return candidateFields.mapNotNull { field ->
+        val array = obj[field] as? JsonArray ?: return@mapNotNull null
+        field to array.size
+    }.toMap()
+}
+
+private fun parseJson(body: String): JsonElement? {
+    if (body.isBlank()) return null
+    return runCatching { lenientJson.parseToJsonElement(body) }.getOrNull()
+}
+
+private enum class AuthHint(val label: String) {
+    FAILURE("auth_failure"),
+    SUCCESS("success"),
+    NEUTRAL("neutral")
+}
+
+private fun detectAuthHint(body: String): AuthHint {
+    if (body.isBlank()) return AuthHint.NEUTRAL
+
+    val json = parseJson(body)
+    if (json is JsonObject && hasSuccessJsonMarker(json)) {
+        return AuthHint.SUCCESS
+    }
+
+    val lowered = body.lowercase(Locale.ROOT)
+    val failureMarkers = listOf(
+        "unauthorized",
+        "forbidden",
+        "access denied",
+        "not login",
+        "not logged",
+        "未登录",
+        "无权限",
+        "没有访问权限",
+        "token invalid",
+        "invalid token"
+    )
+    if (failureMarkers.any { lowered.contains(it) }) {
+        return AuthHint.FAILURE
+    }
+
+    if (lowered.contains("success")) {
+        return AuthHint.SUCCESS
+    }
+
+    return AuthHint.NEUTRAL
+}
+
+private fun hasSuccessJsonMarker(json: JsonObject): Boolean {
+    return isZeroCode(json["code"]) || isTrue(json["success"]) || isTrue(json["ok"])
+}
+
+private fun isZeroCode(element: JsonElement?): Boolean {
+    val primitive = element as? JsonPrimitive ?: return false
+    val content = primitive.contentOrNull?.trim() ?: return false
+    return content == "0" || content == "0.0"
+}
+
+private fun isTrue(element: JsonElement?): Boolean {
+    val primitive = element as? JsonPrimitive ?: return false
+    return primitive.booleanOrNull == true || primitive.contentOrNull.equals("true", ignoreCase = true)
 }
 
 private fun countSensitiveMarkers(body: String): Int {

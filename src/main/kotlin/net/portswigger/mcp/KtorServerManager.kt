@@ -106,7 +106,7 @@ class KtorServerManager(
                 messageQueue = MessageQueue()
                 fileQueue = FileQueue()
                 database = Database(dbPath)
-                exporter = Exporter(api, database!!)
+                exporter = Exporter(api, database!!, config = config)
                 exporter!!.start()
 
                 val mcpServer = createMcpServer()

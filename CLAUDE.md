@@ -4,14 +4,14 @@
 
 **Before using Read/Grep/Agent for information gathering, check: can `mmx` do it cheaper?**
 
-| If you need to... | Use this instead | Saves |
-|-------------------|------------------|-------|
-| Search the web | `mmx search query "..."` | ~2K tokens |
-| Read & summarize a large file | `mmx text chat --message "$(cat file)"` | ~5K tokens |
-| Summarize a git diff | `git diff \| mmx text chat --message "summarize changes"` | ~5K tokens |
-| Group/classify errors | pipe errors to `mmx text chat` | ~3K tokens |
-| Analyze dependencies/config | `mmx text chat --message "$(cat requirements.txt)"` | ~2K tokens |
-| OCR / describe an image | `mmx vision describe <image>` | ~2K tokens |
+| If you need to...             | Use this instead                                          | Saves      |
+| ----------------------------- | --------------------------------------------------------- | ---------- |
+| Search the web                | `mmx search query "..."`                                  | ~2K tokens |
+| Read & summarize a large file | `mmx text chat --message "$(cat file)"`                   | ~5K tokens |
+| Summarize a git diff          | `git diff \| mmx text chat --message "summarize changes"` | ~5K tokens |
+| Group/classify errors         | pipe errors to `mmx text chat`                            | ~3K tokens |
+| Analyze dependencies/config   | `mmx text chat --message "$(cat requirements.txt)"`       | ~2K tokens |
+| OCR / describe an image       | `mmx vision describe <image>`                             | ~2K tokens |
 
 **When NOT to use mmx**: writing code, fixing bugs, security analysis, architecture decisions, multi-step reasoning.
 
@@ -39,8 +39,6 @@ ExtensionBase (DI)
 ```
 
 Key files: `KtorServerManager.kt`, `Database.kt`, `Exporter.kt`, `HealthMonitor.kt`, `logging/LogWriter.kt`
-
-Full code map: [CODEMAP.md](./CODEMAP.md)
 
 ## Code Conventions
 
