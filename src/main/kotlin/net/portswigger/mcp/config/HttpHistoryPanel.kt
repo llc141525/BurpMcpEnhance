@@ -1,9 +1,11 @@
 package net.portswigger.mcp.config
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import net.portswigger.mcp.ServerState
 import net.portswigger.mcp.db.Database
 import net.portswigger.mcp.db.HttpHistoryRow
-import net.portswigger.mcp.db.ProxyHttpEntry
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -46,6 +48,7 @@ class HttpHistoryPanel : JPanel() {
 
     private var searchTimer: Timer? = null
     private var refreshTimer: Timer? = null
+    private val timeFmt = SimpleDateFormat("HH:mm:ss")
 
     init {
         layout = BorderLayout()
@@ -184,23 +187,23 @@ class HttpHistoryPanel : JPanel() {
     fun loadData() {
         val db = database ?: return
         val filter = searchField.text.trim()
-        val rows = db.queryProxyHttp(filter = filter, limit = 500)
-        SwingUtilities.invokeLater { updateTable(rows) }
-
-        val stats = db.stats()
-        SwingUtilities.invokeLater {
-            httpCountBadge.text = stats.proxyHttpCount.toString()
-            scanCountBadge.text = stats.scannerIssueCount.toString()
+        CoroutineScope(Dispatchers.IO).launch {
+            val rows = db.queryProxyHttp(filter = filter, limit = 500)
+            val stats = db.stats()
+            SwingUtilities.invokeLater {
+                updateTable(rows)
+                httpCountBadge.text = stats.proxyHttpCount.toString()
+                scanCountBadge.text = stats.scannerIssueCount.toString()
+            }
         }
     }
 
     private fun updateTable(rows: List<HttpHistoryRow>) {
         tableModel.setRowCount(0)
         rowIds.clear()
-        val fmt = SimpleDateFormat("HH:mm:ss")
         for (row in rows) {
             val contentType = row.contentType?.substringBefore(";")?.substringAfterLast("/")?.take(12) ?: ""
-            val time = fmt.format(Date(row.capturedAt))
+            val time = timeFmt.format(Date(row.capturedAt))
             val hits = if (row.hitCount > 1) row.hitCount.toString() else ""
             tableModel.addRow(arrayOf(row.method, row.status?.toString() ?: "?", row.url, contentType, time, hits))
             rowIds.add(row.id)
