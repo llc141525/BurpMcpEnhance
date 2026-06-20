@@ -23,6 +23,9 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
       - name: Run tests
         run: ./gradlew test
 

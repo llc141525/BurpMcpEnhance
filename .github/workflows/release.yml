@@ -37,6 +37,9 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
       - name: Prepare release metadata
         id: meta
         shell: bash
