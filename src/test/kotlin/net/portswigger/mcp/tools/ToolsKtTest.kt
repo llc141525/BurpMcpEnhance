@@ -1216,6 +1216,111 @@ class ToolsKtTest {
         }
     }
 
+    @Nested
+    inner class ActiveScanToolTests {
+        private val scanner = mockk<burp.api.montoya.scanner.Scanner>()
+        private val audit = mockk<burp.api.montoya.scanner.audit.Audit>()
+        private val httpForScan = mockk<Http>()
+        private val capturedScanRequestText = slot<String>()
+
+        @BeforeEach
+        fun setupActiveScan() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val version = mockk<burp.api.montoya.core.Version>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.version() } returns version
+            every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+            every { burpSuite.taskExecutionEngine() } returns mockk(relaxed = true)
+            every { burpSuite.exportProjectOptionsAsJson() } returns "{}"
+            every { burpSuite.exportUserOptionsAsJson() } returns "{}"
+
+            // AuditConfiguration.auditConfiguration(...) is a Burp-runtime factory; mock it so the test JVM is self-contained.
+            mockkStatic(burp.api.montoya.scanner.AuditConfiguration::class)
+            every {
+                burp.api.montoya.scanner.AuditConfiguration.auditConfiguration(any<burp.api.montoya.scanner.BuiltInAuditConfiguration>())
+            } returns mockk(relaxed = true)
+
+            every { api.scanner() } returns scanner
+            every { scanner.startAudit(any()) } returns audit
+            every { audit.addRequestResponse(any()) } just runs
+
+            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            every { httpResponse.toString() } returns "HTTP/1.1 200 OK"
+            every { api.http() } returns httpForScan
+            every { httpForScan.sendRequest(any<HttpRequest>()) } returns httpResponse
+
+            every {
+                HttpRequest.httpRequest(any<burp.api.montoya.http.HttpService>(), capture(capturedScanRequestText))
+            } answers {
+                mockk<HttpRequest>().also { req -> every { req.toString() } returns secondArg<String>() }
+            }
+
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @AfterEach
+        fun cleanupActiveScan() {
+            unmockkStatic(burp.api.montoya.scanner.AuditConfiguration::class)
+        }
+
+        @Test
+        fun `start_active_scan audits provided raw request preserving POST body`() {
+            runBlocking {
+                val raw = "POST /api/user HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\"id\":1}"
+                val result = client.callTool(
+                    "start_active_scan", mapOf(
+                        "url" to "https://example.com/api/user",
+                        "content" to raw
+                    )
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Active scan started"), "Expected scan to start: $text")
+            }
+
+            assertTrue(
+                capturedScanRequestText.captured.startsWith("POST /api/user HTTP/1.1"),
+                "Audited request should preserve POST method/path: ${capturedScanRequestText.captured}"
+            )
+            assertTrue(
+                capturedScanRequestText.captured.contains("{\"id\":1}"),
+                "Audited request should preserve JSON body: ${capturedScanRequestText.captured}"
+            )
+            verify(exactly = 1) { audit.addRequestResponse(any()) }
+        }
+
+        @Test
+        fun `start_active_scan falls back to bare GET when content omitted`() {
+            runBlocking {
+                val result = client.callTool(
+                    "start_active_scan", mapOf(
+                        "url" to "https://example.com/api/user?id=1"
+                    )
+                )
+                delay(100)
+                result.expectTextContent()
+            }
+
+            assertTrue(
+                capturedScanRequestText.captured.startsWith("GET /api/user?id=1 HTTP/1.1"),
+                "Fallback audited request should be a bare GET: ${capturedScanRequestText.captured}"
+            )
+        }
+    }
+
     @Test
     fun `tool name conversion should work properly`() {
         assertEquals("send_http1_request", "SendHttp1Request".toLowerSnakeCase())

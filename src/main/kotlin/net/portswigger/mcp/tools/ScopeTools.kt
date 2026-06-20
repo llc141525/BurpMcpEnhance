@@ -28,7 +28,8 @@ data class GetSiteMap(
 @Serializable
 data class StartActiveScan(
     val url: String,
-    val auditType: String = "active"
+    val auditType: String = "active",
+    val content: String? = null
 )
 
 fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
@@ -81,7 +82,11 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
         mcpTool<StartActiveScan>(
             "Starts a Burp active scan of the specified URL (Pro only). " +
             "auditType options: 'active' — active checks (default); 'passive' — passive checks only. " +
-            "Installed scanner extensions (Active Scan++, Param Miner, FastjsonScan, ShiroScan, etc.) run automatically. " +
+            "IMPORTANT: pass the full raw HTTP request (request line, headers, cookies, body) via the optional 'content' param " +
+            "so request-shape-dependent extensions actually fire — e.g. FastjsonScan needs a POST JSON body, " +
+            "ShiroScan needs a rememberMe cookie, Java Deserialization Scanner needs a body. " +
+            "Without 'content', the scan falls back to a bare GET of the URL (only query-string params become insertion points). " +
+            "Installed scanner extensions (Active Scan++, FastjsonScan, ShiroScan, etc.) run automatically. " +
             "Returns immediately. Poll results with list_scanner_issues (DB cache) or get_scanner_issues (live). " +
             "Tip: call manage_scope to add the URL to scope first."
         ) {
@@ -97,14 +102,16 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
             val secure = parsed.protocol == "https"
             val path = if (parsed.file.isNullOrEmpty()) "/" else parsed.file
 
+            val requestText = buildScanRequestText(content, host, path)
+
             val allowed = runBlocking {
-                HttpRequestSecurity.checkHttpRequestPermission(host, port, config, "GET $path", api)
+                HttpRequestSecurity.checkHttpRequestPermission(host, port, config, requestText, api)
             }
             if (!allowed) return@mcpTool "Request denied by Burp Suite"
 
             val request = HttpRequest.httpRequest(
                 HttpService.httpService(host, port, secure),
-                "GET $path HTTP/1.1\r\nHost: $host\r\nConnection: close\r\n\r\n"
+                requestText
             )
             val response = api.http().sendRequest(request)
 
@@ -113,7 +120,8 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
             } else {
                 val audit = api.scanner().startAudit(auditConfig)
                 audit.addRequestResponse(response)
-                "Active scan started: $url (auditType=$auditType). " +
+                val mode = if (content.isNullOrBlank()) "bare GET" else "custom request"
+                "Active scan started: $url (auditType=$auditType, $mode). " +
                 "Poll results with list_scanner_issues."
             }
         }
