@@ -47,3 +47,7 @@ bin/
 ARCHITECTURE.md
 .github
 mcp-minimax
+hs_err_pid*.log
+replay_pid*.log
+test_output.txt
+.kotlin/errors/
