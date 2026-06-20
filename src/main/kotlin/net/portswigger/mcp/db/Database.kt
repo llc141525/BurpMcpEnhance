@@ -6,7 +6,6 @@ import java.sql.DriverManager
 
 class Database(dbPath: String = ":memory:") {
 
-    private val dedupWindowMs: Long = 300_000 // 5 minutes
 
     init {
         Class.forName("org.sqlite.JDBC")
@@ -146,10 +145,8 @@ class Database(dbPath: String = ":memory:") {
             val newEntries = mutableListOf<ProxyHttpEntry>()
             val rawToInsert = mutableListOf<RawToInsert>()
 
-            val dedupCutoff = System.currentTimeMillis() - dedupWindowMs
-
             val dedupCheckStmt = connection.prepareStatement(
-                "SELECT id FROM proxy_http_history WHERE dedup_key = ? AND captured_at > ? LIMIT 1"
+                "SELECT id FROM proxy_http_history WHERE dedup_key = ? LIMIT 1"
             )
 
             try {
@@ -157,7 +154,6 @@ class Database(dbPath: String = ":memory:") {
                     val dedupKey = entry.dedupKey
                     if (dedupKey != null) {
                         dedupCheckStmt.setString(1, dedupKey)
-                        dedupCheckStmt.setLong(2, dedupCutoff)
                         val rs = dedupCheckStmt.executeQuery()
                         if (rs.next()) {
                             val canonicalId = rs.getInt("id")
