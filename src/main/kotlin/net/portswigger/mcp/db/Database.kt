@@ -362,11 +362,11 @@ class Database(dbPath: String = ":memory:") {
             """SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
                FROM proxy_http_history
                WHERE url LIKE ? OR method LIKE ? OR CAST(status AS TEXT) LIKE ?
-               ORDER BY captured_at DESC LIMIT ?"""
+               ORDER BY captured_at DESC, id DESC LIMIT ?"""
         } else {
             """SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
                FROM proxy_http_history
-               ORDER BY captured_at DESC LIMIT ?"""
+               ORDER BY captured_at DESC, id DESC LIMIT ?"""
         }
         val stmt = connection.prepareStatement(sql)
         try {
@@ -855,4 +855,14 @@ data class RawDuplicateEntry(
     val responseBody: String?,
     val contentType: String?,
     val capturedAt: Long
+)
+
+data class HttpHistoryRow(
+    val id: Int,
+    val method: String,
+    val status: Int?,
+    val url: String,
+    val contentType: String?,
+    val capturedAt: Long,
+    val hitCount: Int
 )
