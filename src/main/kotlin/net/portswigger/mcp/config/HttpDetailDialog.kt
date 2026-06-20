@@ -167,7 +167,11 @@ class HttpDetailDialog(
             trimmed.startsWith("{") || trimmed.startsWith("[") ->
                 try { prettyPrintJson(trimmed) } catch (e: Exception) { text }
             trimmed.startsWith("<") ->
-                try { prettyPrintXml(trimmed) } catch (e: Exception) { text }
+                try { prettyPrintXml(trimmed) }
+                catch (e: Exception) {
+                    try { prettyPrintHtml(trimmed) }
+                    catch (e2: Exception) { text }
+                }
             else -> text
         }
     }
@@ -211,5 +215,37 @@ class HttpDetailDialog(
         } catch (e: Exception) {
             xml
         }
+    }
+
+    private fun prettyPrintHtml(html: String): String {
+        val voidElements = setOf("area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr", "!doctype")
+        val sb = StringBuilder()
+        var indent = 0
+
+        val tokenRegex = Regex("<[^>]+>|[^<]+")
+        for (match in tokenRegex.findAll(html)) {
+            val token = match.value.trim()
+            if (token.isEmpty()) continue
+
+            if (token.startsWith("<")) {
+                val tagName = token.trimStart('<').split(Regex("[ />\n\r\t]")).firstOrNull()
+                    ?.trimStart('!')?.lowercase() ?: ""
+                val isClosing = token.startsWith("</")
+                val isSelfClosing = token.endsWith("/>") || voidElements.contains(tagName)
+
+                if (isClosing) indent = maxOf(0, indent - 1)
+                repeat(indent) { sb.append("  ") }
+                sb.appendLine(token)
+                if (!isClosing && !isSelfClosing) indent++
+            } else {
+                val text = token.trim()
+                if (text.isNotEmpty()) {
+                    repeat(indent) { sb.append("  ") }
+                    sb.appendLine(text)
+                }
+            }
+        }
+        return sb.toString().trimEnd()
     }
 }

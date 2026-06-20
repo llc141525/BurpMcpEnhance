@@ -79,6 +79,7 @@ class ConfigUi(
     ) {
         httpHistoryPanel.database = database as? Database
         httpHistoryPanel.activeConnectionProvider = activeConnectionProvider
+        httpHistoryPanel.serverUrlProvider = { "${config.host}:${config.port}" }
         httpHistoryPanel.onRestartRequested = { restartServerListener?.invoke() }
         httpHistoryPanel.onClearCacheRequested = {
             val result = Dialogs.showConfirmDialog(
@@ -287,9 +288,9 @@ class ConfigUi(
 
         rightPanelContent.add(buildCollapsibleCard(advancedOptionsPanel, "高级选项"))
         rightPanelContent.add(createVerticalStrut(Design.Spacing.MD))
-        rightPanelContent.add(Design.createCard(installationPanel, "安装"))
+        rightPanelContent.add(buildCollapsibleCard(burpPluginSupportPanel, "第三方插件支持"))
         rightPanelContent.add(createVerticalStrut(Design.Spacing.MD))
-        rightPanelContent.add(Design.createCard(burpPluginSupportPanel, "第三方插件支持"))
+        rightPanelContent.add(Design.createCard(installationPanel, "安装"))
         rightPanelContent.add(createVerticalStrut(Design.Spacing.SM))
         rightPanelContent.add(reinstallNotice)
         rightPanelContent.add(createVerticalGlue())

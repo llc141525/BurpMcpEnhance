@@ -145,6 +145,9 @@ class Database(dbPath: String = ":memory:") {
             val newEntries = mutableListOf<ProxyHttpEntry>()
             val rawToInsert = mutableListOf<RawToInsert>()
 
+            // Maps dedupKey → first entry in this batch (that becomes the canonical)
+            val batchDedupMap = mutableMapOf<String, ProxyHttpEntry>()
+
             val dedupCheckStmt = connection.prepareStatement(
                 "SELECT id FROM proxy_http_history WHERE dedup_key = ? LIMIT 1"
             )
@@ -153,12 +156,21 @@ class Database(dbPath: String = ":memory:") {
                 for (entry in entries) {
                     val dedupKey = entry.dedupKey
                     if (dedupKey != null) {
+                        // 1. Check if we've already seen this dedupKey in the current batch
+                        val batchCanonical = batchDedupMap[dedupKey]
+                        if (batchCanonical != null) {
+                            rawToInsert.add(RawToInsert(batchCanonical.id, entry))
+                            continue
+                        }
+
+                        // 2. Check the database for existing canonical
                         dedupCheckStmt.setString(1, dedupKey)
                         val rs = dedupCheckStmt.executeQuery()
                         if (rs.next()) {
                             val canonicalId = rs.getInt("id")
                             rawToInsert.add(RawToInsert(canonicalId, entry))
                         } else {
+                            batchDedupMap[dedupKey] = entry  // first occurrence becomes canonical
                             newEntries.add(entry)
                         }
                         rs.close()

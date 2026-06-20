@@ -22,6 +22,7 @@ class HttpHistoryPanel : JPanel() {
     var onClearCacheRequested: (() -> Unit)? = null
     var onReimportRequested: (() -> Unit)? = null
     var activeConnectionProvider: (() -> Int)? = null
+    var serverUrlProvider: (() -> String)? = null
 
     private val serverStatusDot = StatusDot()
     private val serverStatusLabel = JLabel("--").apply {
@@ -31,6 +32,11 @@ class HttpHistoryPanel : JPanel() {
     private val httpCountBadge = Design.createBadge("HTTP 0", Design.Colors.tertiary)
     private val scanCountBadge = Design.createBadge("扫描 0", Design.Colors.warning)
     private val connCountBadge = Design.createBadge("连 0", Design.Colors.primary)
+    private val rawDupCountBadge = Design.createBadge("副本 0", Design.Colors.onSurfaceVariant)
+    private val serverAddrLabel = JLabel("").apply {
+        font = Design.Typography.labelMedium
+        foreground = Design.Colors.onSurfaceVariant
+    }
 
     private val searchField = JTextField().apply {
         font = Design.Typography.bodyMedium
@@ -77,11 +83,15 @@ class HttpHistoryPanel : JPanel() {
             add(Box.createHorizontalStrut(6))
             add(serverStatusLabel)
             add(Box.createHorizontalStrut(Design.Spacing.SM))
+            add(serverAddrLabel)
+            add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(httpCountBadge)
             add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(scanCountBadge)
             add(Box.createHorizontalStrut(Design.Spacing.SM))
             add(connCountBadge)
+            add(Box.createHorizontalStrut(Design.Spacing.SM))
+            add(rawDupCountBadge)
             add(Box.createHorizontalGlue())
             add(Design.createOutlinedButton("导入").apply {
                 toolTipText = "重新导入 Burp 历史记录"
@@ -148,11 +158,11 @@ class HttpHistoryPanel : JPanel() {
         }
 
         table.columnModel.apply {
-            getColumn(0).apply { minWidth = 48; preferredWidth = 50; maxWidth = 60 }    // Method
+            getColumn(0).apply { minWidth = 52; preferredWidth = 58; maxWidth = 70 }    // Method
             getColumn(1).apply { minWidth = 38; preferredWidth = 42; maxWidth = 50 }    // 状态
-            // column 2 = URL managed by ComponentListener
+            // column 2 = URL managed by resizeUrlColumn()
             getColumn(3).apply { minWidth = 42; preferredWidth = 50; maxWidth = 60 }    // 类型
-            getColumn(4).apply { minWidth = 58; preferredWidth = 62; maxWidth = 72 }    // 时间
+            getColumn(4).apply { minWidth = 72; preferredWidth = 80; maxWidth = 92 }    // 时间 (HH:mm:ss needs ~76px)
             getColumn(5).apply { minWidth = 28; preferredWidth = 32; maxWidth = 40 }    // 命中
         }
 
@@ -198,7 +208,7 @@ class HttpHistoryPanel : JPanel() {
     }
 
     private fun resizeUrlColumn() {
-        val fixed = 50 + 42 + 50 + 62 + 32   // Method + Status + Type + Time + Hit
+        val fixed = 58 + 42 + 50 + 80 + 32   // Method + Status + Type + Time + Hit
         val available = if (::tableScrollPane.isInitialized) tableScrollPane.viewport.width else 0
         if (available > 0) {
             val urlWidth = maxOf(100, available - fixed)
@@ -223,6 +233,9 @@ class HttpHistoryPanel : JPanel() {
                 httpCountBadge.text = "HTTP ${stats.proxyHttpCount}"
                 scanCountBadge.text = "扫描 ${stats.scannerIssueCount}"
                 connCountBadge.text = "连 $connCount"
+                rawDupCountBadge.text = "副本 ${stats.rawDuplicateCount}"
+                val addr = serverUrlProvider?.invoke()?.let { "· $it" } ?: ""
+                serverAddrLabel.text = addr
             }
         }
     }
