@@ -328,25 +328,37 @@ http://127.0.0.1:9876/mcp
 
 ## 自动发布
 
-仓库内置了 GitHub Actions 发布流水线：
+仓库内置了两条 GitHub Actions 流水线：
 
-- 推送 tag `v*` 时自动构建并发布 Release
-- 也支持在 GitHub Actions 页面手动触发
+- `CI`
+  每次 push 到 `master` 时自动测试、构建，并上传构建产物 Artifact
+- `Release`
+  推送 tag `v*` 时自动正式发布 GitHub Release
+  也支持在 GitHub Actions 页面手动触发
 
 推荐发布流程：
 
 ```bash
-git tag v1.2.2
 git push origin master
+git tag v1.2.2
 git push origin v1.2.2
 ```
 
-流水线会自动：
+CI 会自动：
 
 - 使用 Java 21 构建
+- 执行测试
+- 执行 `./gradlew embedProxyJar`
+- 上传 `build/libs/burp-mcp-all.jar` 作为 Actions Artifact
+
+Release 会自动：
+
+- 使用 Java 21 构建
+- 执行测试
 - 执行 `./gradlew embedProxyJar`
 - 上传 `build/libs/burp-mcp-all.jar`
 - 创建或更新对应版本 Release
+- 基于 GitHub 提交记录自动生成 Release notes
 
 ## 开发
 
@@ -549,22 +561,34 @@ Monitor server/cache state and adjust runtime behavior from the built-in dashboa
 
 ## Automated Releases
 
-This repository includes a GitHub Actions release workflow:
+This repository includes two GitHub Actions workflows:
 
-- pushing a `v*` tag creates a Release automatically
-- you can also trigger it manually from the Actions tab
+- `CI`
+  builds and uploads an artifact on every push to `master`
+- `Release`
+  creates a formal GitHub Release when you push a `v*` tag
+  and can also be triggered manually from the Actions tab
 
 Recommended flow:
 
 ```bash
-git tag v1.2.2
 git push origin master
+git tag v1.2.2
 git push origin v1.2.2
 ```
 
-The workflow will:
+CI will:
 
 - build with Java 21
+- run tests
+- run `./gradlew embedProxyJar`
+- upload `build/libs/burp-mcp-all.jar` as an Actions artifact
+
+Release will:
+
+- build with Java 21
+- run tests
 - run `./gradlew embedProxyJar`
 - upload `build/libs/burp-mcp-all.jar`
 - create or update the matching GitHub Release
+- generate Release notes automatically from GitHub commit history
