@@ -1,137 +1,66 @@
 # Burp Suite MCP Server -- 魔改增强版
 
-[English](#english) | [中文](#中文)
+[中文](#中文) | [English](#english)
 
 ---
 
-<a id="english"></a>
+<a id="中文"></a>
 
-# Burp Suite MCP Server -- Enhanced Edition
+# Burp Suite MCP Server -- 魔改增强版
 
-**If your AI keeps disconnecting or Burp freezes under load, you're in the right place.**
+**给 Burp 装上一个真正能长期稳定工作的 MCP 服务。**
 
-This is a hard fork of the official [PortSwigger mcp-server](https://github.com/PortSwigger/mcp-server). The official version has two unfixable design flaws that make it unusable in real work. This fork replaces both from the ground up.
+如果你遇到过这些问题，这个版本就是为你准备的：
 
-## The Two Problems This Fork Fixes
+- AI 客户端隔几分钟就断开，反复重连
+- Burp 历史记录一多就卡，甚至直接假死
+- 大响应、大量历史、扫描结果根本不好查
+- 官方版能跑 demo，但扛不住真实渗透测试场景
 
-### 1. AI Disconnects Every Few Minutes
+这个仓库是基于 PortSwigger 官方 [mcp-server](https://github.com/PortSwigger/mcp-server) 的深度增强版，核心目标很直接：
 
-The official server uses SSE (Server-Sent Events) -- a long-lived HTTP connection. SSE was never designed for request-response. Under load it drops. Heartbeat self-requests time out. A slow tool call blocks the event loop and kills the connection. You spend more time reconnecting than actually using the tool.
+1. 先让它稳定可用
+2. 再让它适合真实工作流
+3. 最后把使用门槛降到足够低
 
-**What we did:** Replaced SSE with Streamable HTTP (MCP 2025-03-26 spec). A single POST endpoint. Pure request-response. No persistent connection means nothing to disconnect.
+## 先看怎么用
 
-```
-Official: SSE ----- keep alive ----- keep alive ----- drop
-This:     POST -> done  POST -> done  POST -> done
-```
+### 1. 构建
 
-### 2. Burp Freezes on Large Data
+前提：
 
-The official server calls Burp API in real time on every query. During real penetration testing, Burp accumulates thousands of proxy records. Every query blocks Burp's event loop. Burp becomes unresponsive or crashes. This is not a minor slowdown -- it makes the tool unusable past the first few requests.
-
-**What we did:** Decoupled architecture. A background exporter polls Burp API incrementally and writes to local SQLite. MCP tools read from cache, not Burp API. Query time drops from seconds to milliseconds. Burp never blocks.
-
-```
-Official: AI query -> Burp API (real-time) -> Burp freezes
-This:     AI query -> SQLite cache -> instant
-                     ^
-                Background exporter (incremental sync)
-                     ^
-                Burp API
-```
-
-### Other Problems That Got Fixed Along the Way
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| **Scanner results invisible to AI** | No scanner issue query API | Full scanner issue sync + query tools |
-| **Large responses time out** | Huge HTTP body blocks the tool call | Async task queue + file-based chunked reading |
-| **WSL / Docker / remote VM unreachable** | Hardcoded localhost check | `strictLocalhost` toggle |
-| **Float-vs-int type mismatch** | AI sends `20.0` but server expects `20` | `normalizeJsonElement` auto-converts |
-
-### What's In the Box
-
-**SQLite Cache Layer**
-- Proxy history and scanner issues cached locally
-- Paginated queries, detail lookup by ID
-- Incremental sync pulls only new data
-- Clear cache selectively (all / HTTP only / scanner only)
-
-**Background Exporter**
-- Coroutine-driven polling, default every 5 seconds
-- SHA-256 dedup (method + URL), 5-minute window merging
-- Auto-prune at 100K HTTP records, 10K scanner issues
-
-**Async Task System**
-- `submit_task` -- enqueue and get a task ID immediately
-- `get_task_result` -- poll for results
-- `read_file` / `delete_file` -- manage large response files
-- Task types: send HTTP request, create Repeater tab, send to Intruder
-
-**Target Scope & Scanning**
-- `manage_scope` -- add/remove/check Burp target scope
-- `get_site_map` -- list URLs discovered by Burp (filter by prefix)
-- `start_active_scan` -- trigger active audit (Pro only; scanner extensions run automatically)
-- `diff_proxy_responses` -- line-level diff of two responses by ID, token-efficient
-
-**GraphQL Recon**
-- `graphql_introspect` -- fetch and cache a GraphQL schema
-- `graphql_list_types` -- list all types in the cached schema
-- `graphql_describe_type` -- show fields and args for one type
-- `graphql_query` -- execute arbitrary queries against the target
-
-**Better UX**
-- `get_burp_info` -- edition, version, and categorized tool list at a glance
-- Real-time status dashboard -- server, exporter, queue, database
-- Chinese UI -- all UI text in Chinese
-- Restart button -- no need to reload the extension
-- `manage_auto_approve_targets` -- single merged tool to add/remove/list/clear auto-approve targets
-
-## Screenshots
-
-### Request Detail Review
-
-Inspect captured requests in a focused detail view, including headers and body payloads.
-
-![Request detail demo](docs/images/request-detail-demo.png)
-
-### Dashboard & Server Settings
-
-Monitor cache/export status and adjust server behavior from the built-in control panel.
-
-![Dashboard demo](docs/images/dashboard-demo.png)
-
-## Quick Start
-
-### Prerequisites
-
-- **Java 21+** (mandatory -- proxy JAR targets Java 21)
-- `jar` command available
-
-### Build
+- Java 21+
+- 本机可用 `jar`
 
 ```bash
-git clone https://github.com/<your-fork>/burp-mcp-enhance
+git clone https://github.com/llc141525/burp-mcp-enhance.git
 cd burp-mcp-enhance
 ./gradlew embedProxyJar
 ```
 
-Output: `build/libs/burp-mcp-all.jar` (stdio proxy JAR embedded).
+构建完成后，产物在：
 
-### Load into Burp
+```text
+build/libs/burp-mcp-all.jar
+```
 
-1. Open Burp Suite -> Extensions tab
-2. Add -> Extension Type = Java
-3. Select `build/libs/burp-mcp-all.jar` -> Next
-4. Enable the server in Burp's MCP tab
+### 2. 加载到 Burp
 
-### Configure MCP Client
+1. 打开 Burp Suite
+2. 进入 `Extensions`
+3. `Add` -> `Extension Type = Java`
+4. 选择 `build/libs/burp-mcp-all.jar`
+5. 加载后，在 Burp 的 MCP 面板启用服务
 
-The extension listens on `127.0.0.1:9876`.
+### 3. 连接你的 AI 客户端
 
-#### Streamable HTTP (Recommended, MCP 2025-03-26)
+服务默认监听：
 
-Single POST endpoint. No persistent connections. Never disconnects.
+```text
+http://127.0.0.1:9876/mcp
+```
+
+推荐使用 Streamable HTTP：
 
 ```json
 {
@@ -144,24 +73,11 @@ Single POST endpoint. No persistent connections. Never disconnects.
 }
 ```
 
-Works with Claude Desktop, Cursor, and any Streamable HTTP-capable client.
+适用于 Claude Desktop、Cursor 以及其他支持 Streamable HTTP 的 MCP 客户端。
 
-#### SSE (Legacy, less stable)
+### 4. 如果客户端只支持 stdio
 
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "type": "sse",
-      "url": "http://127.0.0.1:9876/sse"
-    }
-  }
-}
-```
-
-#### stdio Proxy (for clients that only support stdio)
-
-Uses the bundled `mcp-proxy-all.jar` as a stdio-SSE bridge. Requires Java 21:
+这个项目内置 `mcp-proxy-all.jar`，可以桥接 stdio：
 
 ```json
 {
@@ -179,161 +95,40 @@ Uses the bundled `mcp-proxy-all.jar` as a stdio-SSE bridge. Requires Java 21:
 }
 ```
 
-> Extract the proxy JAR via Burp UI: "Extract Proxy Jar" button, or click "Install to Claude Desktop" for auto-configuration.
+> 也可以在 Burp UI 里直接点击“提取服务器代理 jar”或“安装到 Claude Desktop”。
 
-## Configuration
+## 为什么这个版本值得用
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| Server Host | Bind address | `127.0.0.1` |
-| Server Port | Listen port | `9876` |
-| Strict localhost | Disable for WSL/remote | On |
-| Keepalive ping | SSE heartbeat | On |
-| Keepalive interval | Heartbeat interval (s) | 30s |
-| Max response size | Single response limit (KB) | 100KB |
-| HTTP request approval | Confirm before sending HTTP | On |
-| History access approval | Confirm before reading history | On |
+### 1. 不再依赖脆弱的 SSE 长连接
 
-## MCP Tools
+官方版主要依赖 SSE。问题是 SSE 本来就不适合高频、长时间、工具型请求响应场景，实际表现就是：
 
-### Info
-- `get_burp_info` -- Edition, version, and full tool inventory
+- 心跳超时
+- 长调用阻塞
+- 连接被打断
+- AI 端频繁重连
 
-### HTTP
-- `send_http1_request` -- Send HTTP/1.1 request (A-class plugins apply automatically)
-- `send_http2_request` -- Send HTTP/2 request
-- `create_repeater_tab` -- Create Repeater tab
-- `send_to_intruder` -- Send to Intruder
+这个版本把主通道换成了 **Streamable HTTP（MCP 2025-03-26）**：
 
-### Proxy History
-- `get_proxy_http_history` -- Live proxy history; optional `regex` param for filtering
-- `get_proxy_websocket_history` -- WebSocket history; optional `regex` param
-
-### Scope & Scanning
-- `manage_scope` -- Add / remove / check URLs in Burp target scope
-- `get_site_map` -- URLs discovered by Burp, filterable by prefix
-- `start_active_scan` -- Trigger active audit; B-class scanner extensions run automatically *(Pro only)*
-
-### Diff
-- `diff_proxy_responses` -- Line-level diff of two responses by history ID; token-efficient
-
-### GraphQL Recon
-- `graphql_introspect` -- Fetch & cache a GraphQL schema via introspection
-- `graphql_list_types` -- List all types in a cached schema
-- `graphql_describe_type` -- Show fields and arguments for a specific type
-- `graphql_query` -- Execute arbitrary GraphQL queries or mutations
-
-### Cached Data (SQLite)
-- `list_proxy_http_history` -- Paginated HTTP records from local cache
-- `get_proxy_http_detail` -- Full request/response by ID
-- `list_scanner_issues` -- Scanner issue summary from cache
-- `get_scanner_issue_detail` -- Full scanner issue detail
-- `exporter_stats` -- Cache status
-
-### Pro Only (Burp Suite Professional)
-- `get_scanner_issues` -- Live scanner results from Burp API
-- `generate_collaborator_payload` -- Generate a Burp Collaborator OOB payload
-- `get_collaborator_interactions` -- Query DNS/HTTP/SMTP callbacks for a payload
-
-### Async Tasks
-- `submit_task` -- Submit background task, get ID immediately
-- `get_task_result` -- Poll task result
-
-### File Management
-- `read_file` -- Read temp file (large response chunks)
-- `delete_file` -- Delete temp file
-
-### Utilities
-- `url_encode` / `url_decode` -- URL encoding
-- `base64_encode` / `base64_decode` -- Base64 encoding
-- `generate_random_string` -- Random string generation
-- `get_active_editor_contents` -- Read the active Burp editor
-- `set_active_editor_contents` -- Write to the active Burp editor
-
-### Configuration
-- `manage_auto_approve_targets` -- Add / remove / list / clear auto-approve targets (`action` param)
-- `set_task_execution_engine_state` -- Pause or resume Burp's task engine
-- `set_proxy_intercept_state` -- Enable or disable proxy intercept
-- `clear_database` -- Clear cache (all / HTTP / scanner)
-
-## Architecture
-
-```
-+---------------------------------------------------+
-|                   Burp Suite                       |
-|  +----------------------------------------------+ |
-|  |          MCP Server Extension                | |
-|  |  +------------------+  +-------------------+ | |
-|  |  | POST /mcp        |  | GET+POST /sse     | | |
-|  |  | (Streamable HTTP)|  | (SSE legacy)      | | |
-|  |  +------------------+  +-------------------+ | |
-|  |  +-------------+  +-----------------------+  | |
-|  |  | Exporter    |->|  SQLite Database      |  | |
-|  |  | (background)|  |  (local cache)        |  | |
-|  |  +-------------+  +-----------------------+  | |
-|  +----------------------------------------------+ |
-|          ^                  ^                     |
-|   HTTP POST /mcp      SSE GET /sse                |
-+----------+------------------+---------------------+
-           |                  |
-    +------+------+    +------+------+
-    | MCP Client  |    | MCP Client  |
-    | (Claude etc)|    | (legacy)    |
-    +-------------+    +-------------+
+```text
+原版： SSE ----- 保活 ----- 保活 ----- 断开
+本版： POST -> 结束  POST -> 结束  POST -> 结束
 ```
 
-## Development
+没有长连接，自然也就没有“用着用着掉线”这个老问题。
 
-Tools are defined under `src/main/kotlin/net/portswigger/mcp/tools/`. Add a new tool:
+### 2. 查询不再实时打 Burp API，Burp 不再被拖死
 
-```kotlin
-@Serializable
-data class MyToolArgs(val param: String)
+官方版每次查询都直接调用 Burp API。真实使用里，只要代理历史一多：
 
-// Register in Tools.kt
-mcpTool<MyToolArgs>("tool description") {
-    // your logic
-}
-```
+- 查历史卡
+- 查细节卡
+- Burp UI 卡
+- 严重点直接无响应
 
-## Build Commands
+这个版本改成了 **后台增量导出 + SQLite 本地缓存**：
 
-| Command | Description |
-|---------|-------------|
-| `./gradlew embedProxyJar` | Build distributable JAR (proxy embedded) |
-| `./gradlew test` | Run tests |
-| `./gradlew shadowJar` | Build JAR only, no proxy |
-
----
-
-<a id="中文"></a>
-
-# Burp Suite MCP Server -- 魔改增强版
-
-**AI 频繁断连？Burp 数据量大就卡死？这个版本把这两个问题彻底解决了。**
-
-基于 PortSwigger 官方 [mcp-server](https://github.com/PortSwigger/mcp-server) 深度魔改。原版有两个设计层级的硬伤，在实际渗透测试中根本没法用。这个版本从底层替换了这两套方案。
-
-## 本版解决的两大问题
-
-### 1. AI 几分钟就断一次
-
-原版用 SSE（Server-Sent Events）长连接。SSE 本来就不是为请求-响应设计的，负载一高就断。自请求心跳超时、某次工具调用慢了卡住事件循环，连接直接挂。实际用起来大半时间在重连，而不是在真正用工具。
-
-**怎么修的：** 替换成 Streamable HTTP（MCP 2025-03-26 新标准）。一个 POST 端点，纯请求-响应。没有长连接，永远不会"断连"。
-
-```
-原版：   SSE ----- 保活 ----- 保活 ----- 断开
-本版：   POST -> 结束  POST -> 结束  POST -> 结束
-```
-
-### 2. Burp 数据量大直接卡死
-
-原版每次查询都实时调 Burp API。挖洞时 Burp 里成百上千条代理记录，查一次卡一次。Burp 事件循环被阻塞，界面无响应甚至崩溃。这不是"有点慢"的问题，是超过几十条请求就直接不能用了。
-
-**怎么修的：** 解耦架构。后台导出器轮询 Burp API，增量写入本地 SQLite。MCP 工具读缓存，不走 Burp API。查询从秒级降到毫秒级。Burp 永远不阻塞。
-
-```
+```text
 原版： AI 查询 -> Burp API（实时）-> Burp 卡死
 本版： AI 查询 -> SQLite 缓存 -> 毫秒返回
                  ^
@@ -342,146 +137,124 @@ mcpTool<MyToolArgs>("tool description") {
             Burp API
 ```
 
-### 顺带修了的其他问题
+这样做的结果很直接：
 
-| 痛点 | 原版根因 | 本版改进 |
-|------|---------|---------|
-| **扫描结果查不了** | 没提供扫描查询接口 | 全量扫描问题同步 + 查询工具 |
-| **大响应直接超时** | 返回结果太大阻塞调用 | 异步任务队列 + 文件分块读取 |
-| **WSL/Docker/远程用不了** | 写死了 localhost 检查 | `strictLocalhost` 开关 |
-| **参数类型对不上** | AI 发 `20.0` 但系统要 `20` | `normalizeJsonElement` 自动转 |
+- MCP 查询速度更稳定
+- Burp 不会因为 AI 查询而持续卡顿
+- 历史、扫描结果、详情查看都更适合长期会话
 
-### 功能一览
+## 一眼看懂的核心能力
 
-**SQLite 缓存层**
-- 代理 HTTP 历史 + 扫描问题自动缓存到本地 SQLite
-- 分页查询、按 ID 获取详情
-- SHA-256 去重（method + URL），5 分钟窗口合并
-- 自动清理：10 万 HTTP 记录、1 万扫描问题
+### 稳定性
 
-**后台导出器**
-- 协程驱动后台轮询，默认每 5 秒同步一次
-- 游标增量同步，只拉取新数据
-- 自动去重，支持扫描问题同步
+- 默认推荐 Streamable HTTP，显著降低断连问题
+- 保留 SSE 兼容模式，兼容旧客户端
+- 支持重启服务，不需要反复重载扩展
 
-**异步任务系统**
-- `submit_task` -- 提交后台任务，立即返回 ID
-- `get_task_result` -- 轮询获取结果
-- `read_file` / `delete_file` -- 管理大文件
-- 支持 HTTP 请求、创建 Repeater、发送到 Intruder
+### 性能
 
-**目标范围与扫描**
-- `manage_scope` -- 添加/删除/检查 Burp 目标范围
-- `get_site_map` -- 列出 Burp 发现的 URL（可按前缀过滤）
-- `start_active_scan` -- 触发主动扫描（Pro 专属；扫描器扩展自动运行）
-- `diff_proxy_responses` -- 按 ID 对比两条响应差异行，省 Token
+- Burp 数据后台增量同步到 SQLite
+- HTTP 历史和扫描结果可分页读取
+- 自动去重、自动裁剪、自动清理旧数据
 
-**GraphQL 侦察**
-- `graphql_introspect` -- 获取并缓存 GraphQL schema
-- `graphql_list_types` -- 列出缓存 schema 中的所有类型
-- `graphql_describe_type` -- 查看指定类型的字段和参数
-- `graphql_query` -- 执行任意 GraphQL 查询
+### 更适合渗透测试工作流
 
-**更好的 UI**
-- `get_burp_info` -- 版本、版本类型与工具清单一览
-- 实时状态仪表板 -- 服务器、导出器、队列、数据库一目了然
-- 全中文界面
-- 重启按钮 -- 不需要重载扩展
-- `manage_auto_approve_targets` -- 单一合并工具管理自动放行列表（add/remove/list/clear）
+- 支持按 ID 查看完整请求/响应详情
+- 支持对比两条响应差异 `diff_proxy_responses`
+- 支持 GraphQL introspection / 类型查询 / schema 缓存
+- 支持范围管理、站点地图、主动扫描
+
+### 更适合 AI 使用
+
+- 大响应支持异步任务和文件分块读取
+- `get_burp_info` 可让 AI 先理解当前 Burp 能力
+- 自动审批目标支持统一管理
+- 处理了常见的 `20.0` / `20` 这类类型不匹配问题
 
 ## 项目展示
 
 ### 请求详情查看
 
-可以在详情视图中直接检查捕获到的请求内容，包括请求头和请求体。
+可以直接在界面里查看单条请求的请求头、请求体和结构化内容。
 
 ![请求详情展示](docs/images/request-detail-demo.png)
 
 ### 仪表板与服务配置
 
-内置控制面板可以实时查看缓存/导出状态，并调整服务端行为。
+可以实时查看服务状态、缓存情况，并调整导出和审批行为。
 
 ![仪表板展示](docs/images/dashboard-demo.png)
 
-## 快速开始
+## 常见使用场景
 
-### 前提条件
+### 让 AI 查 Burp 历史
 
-- **Java 21+**（必须，代理 JAR 编译目标 Java 21）
-- `jar` 命令可用
+- `get_proxy_http_history`
+- `get_proxy_http_detail`
+- `get_proxy_websocket_history`
 
-### 构建
+### 让 AI 做目标侦察
 
-```bash
-git clone https://github.com/<your-fork>/burp-mcp-enhance
-cd burp-mcp-enhance
-./gradlew embedProxyJar
-```
+- `manage_scope`
+- `get_site_map`
+- `graphql_introspect`
+- `graphql_list_types`
+- `graphql_describe_type`
 
-产物：`build/libs/burp-mcp-all.jar`（内嵌 stdio 代理）。
+### 让 AI 帮你分析请求差异
 
-### 加载到 Burp
+- `diff_proxy_responses`
 
-1. 打开 Burp Suite -> Extensions 标签
-2. Add -> Extension Type = Java
-3. 选择 `build/libs/burp-mcp-all.jar` -> Next
-4. 在 Burp 的 MCP 标签页启用服务器
+### 让 AI 发请求但不把 Burp 弄卡
 
-### 配置 MCP 客户端
+- `send_http1_request`
+- `send_http2_request`
+- `submit_task`
+- `get_task_result`
 
-扩展启动后在 `127.0.0.1:9876` 提供服务。
+## MCP 工具重点速览
 
-#### Streamable HTTP（推荐，MCP 2025-03-26 新标准）
+### HTTP 与请求操作
 
-一个 POST 端点，无持久连接，永不掉线：
+- `send_http1_request`
+- `send_http2_request`
+- `create_repeater_tab`
+- `send_to_intruder`
 
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
-    }
-  }
-}
-```
+### 代理历史与缓存
 
-适用于 Claude Desktop、Cursor 等支持 Streamable HTTP 的客户端。
+- `get_proxy_http_history`
+- `get_proxy_websocket_history`
+- `list_proxy_http_history`
+- `get_proxy_http_detail`
+- `exporter_stats`
 
-#### SSE 直连（向后兼容，稳定性较差）
+### 范围、站点与扫描
 
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "type": "sse",
-      "url": "http://127.0.0.1:9876/sse"
-    }
-  }
-}
-```
+- `manage_scope`
+- `get_site_map`
+- `start_active_scan`（Burp Pro）
+- `list_scanner_issues`
+- `get_scanner_issue_detail`
 
-#### stdio 代理（仅支持 stdio 的旧客户端）
+### GraphQL
 
-使用内置 `mcp-proxy-all.jar` 桥接 stdio-SSE。需要 Java 21：
+- `graphql_introspect`
+- `graphql_list_types`
+- `graphql_describe_type`
+- `graphql_query`
 
-```json
-{
-  "mcpServers": {
-    "burp": {
-      "command": "java",
-      "args": [
-        "-jar",
-        "/path/to/mcp-proxy-all.jar",
-        "--sse-url",
-        "http://127.0.0.1:9876/sse"
-      ]
-    }
-  }
-}
-```
+### 差异分析
 
-> 可在 Burp UI 中点击"提取服务器代理 jar"获取，或点击"安装到 Claude Desktop"自动配置。
+- `diff_proxy_responses`
+
+### 配置与辅助
+
+- `manage_auto_approve_targets`
+- `set_task_execution_engine_state`
+- `set_proxy_intercept_state`
+- `clear_database`
+- `get_burp_info`
 
 ## 配置说明
 
@@ -496,78 +269,39 @@ cd burp-mcp-enhance
 | HTTP 请求审批 | 发送 HTTP 前需确认 | 开启 |
 | 历史记录访问审批 | 读取历史前需确认 | 开启 |
 
-## MCP 工具清单
+## 详细能力说明
 
-### 基础信息
-- `get_burp_info` -- 版本类型、版本号与全量工具分类一览
+### SQLite 缓存层
 
-### HTTP
-- `send_http1_request` -- 发送 HTTP/1.1 请求（A 类插件自动生效）
-- `send_http2_request` -- 发送 HTTP/2 请求
-- `create_repeater_tab` -- 创建 Repeater 标签
-- `send_to_intruder` -- 发送到 Intruder
+- 代理 HTTP 历史和扫描问题自动缓存到本地 SQLite
+- 支持分页查询、详情查看和按 ID 检索
+- SHA-256 去重（`method + URL`），5 分钟窗口合并
+- 自动清理：10 万 HTTP 记录、1 万扫描问题
 
-### 代理历史
-- `get_proxy_http_history` -- 实时代理 HTTP 历史，可选 `regex` 过滤参数
-- `get_proxy_websocket_history` -- WebSocket 历史，可选 `regex` 过滤参数
+### 后台导出器
 
-### 范围与扫描
-- `manage_scope` -- 添加/删除/检查目标范围
-- `get_site_map` -- 列出 Burp 已发现的 URL，可按前缀过滤
-- `start_active_scan` -- 触发主动扫描；B 类扫描器扩展自动运行 *(Pro 专属)*
+- 协程驱动后台轮询，默认每 5 秒同步一次
+- 游标增量同步，只拉取新数据
+- 支持仅导出 Scope 内请求
+- 支持导出噪音过滤策略
 
-### 差异对比
-- `diff_proxy_responses` -- 按历史 ID 对比两条响应的差异行，省 Token
+### 异步任务系统
 
-### GraphQL 侦察
-- `graphql_introspect` -- 发送 introspection 并缓存 schema
-- `graphql_list_types` -- 列出缓存 schema 中所有类型
-- `graphql_describe_type` -- 查看指定类型的字段与参数
-- `graphql_query` -- 执行任意 GraphQL 查询或 mutation
-
-### 缓存数据查询（SQLite）
-- `list_proxy_http_history` -- 从本地缓存分页列出 HTTP 记录
-- `get_proxy_http_detail` -- 按 ID 获取完整请求/响应
-- `list_scanner_issues` -- 列出缓存中的扫描问题摘要
-- `get_scanner_issue_detail` -- 获取扫描问题完整详情
-- `exporter_stats` -- 查看缓存状态
-
-### Pro 专属（Burp Suite Professional）
-- `get_scanner_issues` -- 实时扫描结果
-- `generate_collaborator_payload` -- 生成 Burp Collaborator OOB payload
-- `get_collaborator_interactions` -- 查询 DNS/HTTP/SMTP 回调
-
-### 异步任务
-- `submit_task` -- 提交后台任务，立即返回 ID
-- `get_task_result` -- 查询任务结果
-
-### 文件管理
-- `read_file` -- 读取临时文件（大响应分块读取）
-- `delete_file` -- 删除临时文件
-
-### 实用工具
-- `url_encode` / `url_decode` -- URL 编解码
-- `base64_encode` / `base64_decode` -- Base64 编解码
-- `generate_random_string` -- 随机字符串生成
-- `get_active_editor_contents` -- 读取当前 Burp 编辑器内容
-- `set_active_editor_contents` -- 写入当前 Burp 编辑器内容
-
-### 配置管理
-- `manage_auto_approve_targets` -- 管理自动放行列表（action: add/remove/list/clear）
-- `set_task_execution_engine_state` -- 暂停/恢复 Burp 任务引擎
-- `set_proxy_intercept_state` -- 启用/禁用代理拦截
-- `clear_database` -- 清除缓存（全部/HTTP 历史/扫描问题）
+- `submit_task` 提交后台任务，立即返回 ID
+- `get_task_result` 轮询结果
+- `read_file` / `delete_file` 管理大响应文件
+- 适合大响应、长任务和低 token 压力场景
 
 ## 架构说明
 
-```
+```text
 +---------------------------------------------------+
-|                   Burp Suite                       |
+|                   Burp Suite                      |
 |  +----------------------------------------------+ |
 |  |          MCP Server Extension                | |
 |  |  +------------------+  +-------------------+ | |
 |  |  | POST /mcp        |  | GET+POST /sse     | | |
-|  |  | (Streamable HTTP)|  | (SSE 旧版)        | | |
+|  |  | (Streamable HTTP)|  | (SSE 兼容模式)    | | |
 |  |  +------------------+  +-------------------+ | |
 |  |  +-------------+  +-----------------------+  | |
 |  |  | Exporter    |->|  SQLite Database      |  | |
@@ -584,24 +318,209 @@ cd burp-mcp-enhance
     +-------------+    +-------------+
 ```
 
+## 构建命令
+
+| 命令 | 说明 |
+|------|------|
+| `./gradlew embedProxyJar` | 构建最终可分发 JAR（推荐） |
+| `./gradlew test` | 运行测试 |
+| `./gradlew shadowJar` | 仅构建主 JAR |
+
 ## 开发
 
-工具定义在 `src/main/kotlin/net/portswigger/mcp/tools/`，新增工具只需创建 `@Serializable` 数据类并注册：
+工具定义主要位于：
+
+```text
+src/main/kotlin/net/portswigger/mcp/tools/
+```
+
+新增工具时，创建 `@Serializable` 参数类并在 `Tools.kt` 注册即可：
 
 ```kotlin
 @Serializable
 data class MyToolArgs(val param: String)
 
-// 在 Tools.kt 中注册
 mcpTool<MyToolArgs>("工具描述") {
-    // 处理逻辑
+    // your logic
 }
 ```
 
-## 构建命令
+---
 
-| 命令 | 说明 |
-|------|------|
-| `./gradlew embedProxyJar` | 构建可分发的 JAR（含内嵌代理） |
-| `./gradlew test` | 运行测试 |
-| `./gradlew shadowJar` | 仅构建 JAR 本体，不含代理 |
+<a id="english"></a>
+
+# Burp Suite MCP Server -- Enhanced Edition
+
+**A Burp MCP server that is built for real workloads, not just demos.**
+
+This fork exists for one reason: the official server is hard to use in long-running, real penetration testing sessions.
+
+Typical failure modes in the official build:
+
+- AI clients disconnect repeatedly
+- Burp slows down or freezes when history grows
+- Large responses are painful to inspect
+- Scanner results and cached data are not easy to work with
+
+This fork fixes those issues at the architecture level.
+
+## Quick Start
+
+### Build
+
+Requirements:
+
+- Java 21+
+- `jar` available on your machine
+
+```bash
+git clone https://github.com/llc141525/burp-mcp-enhance.git
+cd burp-mcp-enhance
+./gradlew embedProxyJar
+```
+
+Artifact:
+
+```text
+build/libs/burp-mcp-all.jar
+```
+
+### Load Into Burp
+
+1. Open Burp Suite
+2. Go to `Extensions`
+3. Click `Add`
+4. Choose `Extension Type = Java`
+5. Select `build/libs/burp-mcp-all.jar`
+6. Enable the MCP server in Burp
+
+### Configure Your MCP Client
+
+Recommended:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "type": "http",
+      "url": "http://127.0.0.1:9876/mcp"
+    }
+  }
+}
+```
+
+For stdio-only clients:
+
+```json
+{
+  "mcpServers": {
+    "burp": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "/path/to/mcp-proxy-all.jar",
+        "--sse-url",
+        "http://127.0.0.1:9876/sse"
+      ]
+    }
+  }
+}
+```
+
+## Why This Fork Matters
+
+### Streamable HTTP instead of fragile SSE-first behavior
+
+The official server relies on SSE for a workload that behaves much more like request-response tooling than streaming UI updates. Under load, that tends to break.
+
+This fork makes Streamable HTTP the primary path:
+
+```text
+Official: SSE ----- keep alive ----- keep alive ----- drop
+This fork: POST -> done  POST -> done  POST -> done
+```
+
+### SQLite cache instead of live-querying Burp on every request
+
+The official design asks Burp for data in real time on every query. That becomes painful once history grows.
+
+This fork uses a background exporter plus SQLite cache:
+
+```text
+Official: AI query -> Burp API (real-time) -> Burp freezes
+This fork: AI query -> SQLite cache -> instant
+                      ^
+                 Background exporter
+                      ^
+                   Burp API
+```
+
+## Key Capabilities
+
+- Streamable HTTP MCP endpoint
+- SSE compatibility mode
+- SQLite-backed cached proxy/scanner history
+- Background incremental exporter
+- GraphQL introspection and schema caching
+- Response diffing by history ID
+- Scope management and site map queries
+- Async task queue for large responses
+- Chinese UI and built-in control dashboard
+
+## Screenshots
+
+### Request Detail Review
+
+Inspect request headers and body content in a focused detail view.
+
+![Request detail demo](docs/images/request-detail-demo.png)
+
+### Dashboard & Server Settings
+
+Monitor server/cache state and adjust runtime behavior from the built-in dashboard.
+
+![Dashboard demo](docs/images/dashboard-demo.png)
+
+## Important Tools
+
+### HTTP
+
+- `send_http1_request`
+- `send_http2_request`
+- `create_repeater_tab`
+- `send_to_intruder`
+
+### History & Cache
+
+- `get_proxy_http_history`
+- `get_proxy_websocket_history`
+- `list_proxy_http_history`
+- `get_proxy_http_detail`
+- `exporter_stats`
+
+### Scope & Scanning
+
+- `manage_scope`
+- `get_site_map`
+- `start_active_scan`
+
+### GraphQL
+
+- `graphql_introspect`
+- `graphql_list_types`
+- `graphql_describe_type`
+- `graphql_query`
+
+### Analysis & Utilities
+
+- `diff_proxy_responses`
+- `manage_auto_approve_targets`
+- `get_burp_info`
+
+## Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `./gradlew embedProxyJar` | Build the distributable JAR |
+| `./gradlew test` | Run tests |
+| `./gradlew shadowJar` | Build the main JAR only |
