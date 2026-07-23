@@ -2,6 +2,7 @@ package net.portswigger.mcp.exporter
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.http.HttpService
+import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
@@ -86,6 +87,76 @@ class ExporterTest {
     }
 
     @Test
+    fun `exportProxyHttpHistory should keep same timestamp boundary entries`() = runBlocking {
+        val entry1 = createMockProxyEntry(1000, "http://example.com/first")
+        val entry2 = createMockProxyEntry(1000, "http://example.com/second")
+        val proxyMock = mockk<Proxy>(relaxed = true)
+
+        every { api.proxy() } returns proxyMock
+        every { proxyMock.history() } returns listOf(entry1)
+        exporter.exportProxyHttpHistory()
+        assertEquals(1, database.stats().proxyHttpCount)
+
+        every { proxyMock.history() } returns listOf(entry1, entry2)
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(2, database.stats().proxyHttpCount, "Entries sharing the last timestamp must not be skipped")
+    }
+
+    @Test
+    fun `exportProxyHttpHistory should keep same timestamp same url entries with different request bodies`() = runBlocking {
+        val entry1 = createMockProxyEntry(1000, "http://example.com/login", method = "POST", requestBody = """{"user":"alice"}""")
+        val entry2 = createMockProxyEntry(1000, "http://example.com/login", method = "POST", requestBody = """{"user":"bob"}""")
+        val proxyMock = mockk<Proxy>(relaxed = true)
+
+        every { api.proxy() } returns proxyMock
+        every { proxyMock.history() } returns listOf(entry1)
+        exporter.exportProxyHttpHistory()
+
+        every { proxyMock.history() } returns listOf(entry1, entry2)
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(2, database.stats().proxyHttpCount)
+        val ids = database.listProxyHttpHistory().map { it.id }
+        val bodies = database.getProxyHttpDetail(ids).map { it.requestBody }
+        assertTrue("""{"user":"alice"}""" in bodies)
+        assertTrue("""{"user":"bob"}""" in bodies)
+    }
+
+    @Test
+    fun `notifyDatabaseCleared should reset proxy watermark so old history can be restored`() = runBlocking {
+        val entry = createMockProxyEntry(1000, "http://example.com/restored")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(entry)
+        }
+
+        exporter.exportProxyHttpHistory()
+        assertEquals(1, database.stats().proxyHttpCount)
+
+        database.clearProxyHttpHistory()
+        exporter.notifyDatabaseCleared()
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(1, database.stats().proxyHttpCount)
+        assertEquals("http://example.com/restored", database.listProxyHttpHistory().single().url)
+    }
+
+    @Test
+    fun `clearing scanner issues should not reset proxy watermark`() = runBlocking {
+        val entry = createMockProxyEntry(1000, "http://example.com/not-restored")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(entry)
+        }
+
+        exporter.exportProxyHttpHistory()
+        database.clearProxyHttpHistory()
+        database.clearScannerIssues()
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(0, database.stats().proxyHttpCount)
+    }
+
+    @Test
     fun `exportProxyHttpHistory should handle empty history gracefully`() = runBlocking {
         every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
             every { history() } returns emptyList()
@@ -106,6 +177,44 @@ class ExporterTest {
         exporter.exportProxyHttpHistory()
 
         assertEquals(1, database.stats().proxyHttpCount)
+    }
+
+    @Test
+    fun `exporter stats should report history and filter counts`() = runBlocking {
+        config.exportInScopeOnly = true
+        val scopeMock = mockk<Scope>(relaxed = true)
+        every { api.scope() } returns scopeMock
+        every { scopeMock.isInScope("http://example.com/in") } returns true
+        every { scopeMock.isInScope("http://example.com/out") } returns false
+        every { scopeMock.isInScope("http://example.com/app.js") } returns true
+
+        val inScope = createMockProxyEntry(1000, "http://example.com/in", accept = "application/json")
+        val outOfScope = createMockProxyEntry(2000, "http://example.com/out", accept = "application/json")
+        val staticAsset = createMockProxyEntry(3000, "http://example.com/app.js", secFetchDest = "script")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(inScope, outOfScope, staticAsset)
+        }
+
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(3, exporter.stats.historySeen)
+        assertEquals(3, exporter.stats.newEntriesSeen)
+        assertEquals(1, exporter.stats.filteredOutOfScope)
+        assertEquals(1, exporter.stats.filteredNoise)
+        assertEquals(1, exporter.stats.exportedThisCycle)
+        assertTrue(exporter.stats.lastCycleDurationMs >= 0)
+    }
+
+    @Test
+    fun `exporter stats should retain the latest cycle error`() = runBlocking {
+        val proxyMock = mockk<Proxy>(relaxed = true)
+        every { api.proxy() } returns proxyMock
+        every { proxyMock.history() } throws IllegalStateException("history unavailable")
+
+        runCatching { exporter.exportProxyHttpHistory() }
+
+        assertEquals("history unavailable", exporter.stats.lastCycleError)
+        assertTrue(exporter.stats.lastCycleDurationMs >= 0)
     }
 
     @Test
@@ -164,6 +273,54 @@ class ExporterTest {
         exporter.exportProxyHttpHistory()
 
         assertEquals(0, database.stats().proxyHttpCount)
+    }
+
+    @Test
+    fun `scope only filtering should count out of scope entries before writing`() = runBlocking {
+        config.exportInScopeOnly = true
+        val scopeMock = mockk<Scope>(relaxed = true)
+        every { api.scope() } returns scopeMock
+        every { scopeMock.isInScope("http://example.com/in") } returns true
+        every { scopeMock.isInScope("http://example.com/out") } returns false
+
+        val inScope = createMockProxyEntry(1000, "http://example.com/in", accept = "application/json")
+        val outOfScope = createMockProxyEntry(1001, "http://example.com/out", accept = "application/json")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(inScope, outOfScope)
+        }
+
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(1, database.stats().proxyHttpCount)
+        assertEquals(2, exporter.stats.newEntriesSeen)
+        assertEquals(1, exporter.stats.filteredOutOfScope)
+        assertEquals(1, exporter.stats.exportedThisCycle)
+    }
+
+    @Test
+    fun `explicit reimport should recalculate old history using current scope`() = runBlocking {
+        val scopeMock = mockk<Scope>(relaxed = true)
+        every { api.scope() } returns scopeMock
+        val scoped = createMockProxyEntry(1000, "http://example.com/scoped", accept = "application/json")
+        val laterOut = createMockProxyEntry(2000, "http://example.com/out", accept = "application/json")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(scoped, laterOut)
+        }
+
+        config.exportInScopeOnly = false
+        exporter.exportProxyHttpHistory()
+        assertEquals(2, database.stats().proxyHttpCount)
+
+        database.clearProxyHttpHistory()
+        config.exportInScopeOnly = true
+        every { scopeMock.isInScope("http://example.com/scoped") } returns true
+        every { scopeMock.isInScope("http://example.com/out") } returns false
+
+        exporter.resetWatermark()
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(listOf("http://example.com/scoped"), database.listProxyHttpHistory().map { it.url })
+        assertEquals(1, exporter.stats.filteredOutOfScope)
     }
 
     @Test
@@ -300,7 +457,9 @@ class ExporterTest {
         accessControlRequestMethod: String? = null,
         responseStatus: Int? = null,
         contentType: String? = null,
-        responseBody: String? = null
+        responseBody: String? = null,
+        requestBody: String? = null,
+        requestHeaders: List<Pair<String, String>> = emptyList()
     ): ProxyHttpRequestResponse {
         val mockEntry = mockk<ProxyHttpRequestResponse>(relaxed = true)
         val zonedDateTime = ZonedDateTime.ofInstant(
@@ -310,7 +469,11 @@ class ExporterTest {
 
         val mockRequest = mockk<HttpRequest>(relaxed = true)
         every { mockEntry.request() } returns mockRequest
-        every { mockRequest.body() } returns null
+        every { mockRequest.body() } returns requestBody?.let {
+            mockk<burp.api.montoya.core.ByteArray>(relaxed = true).also { body ->
+                every { body.toString() } returns it
+            }
+        }
 
         val path = java.net.URI(url).rawPath
         val mockService = mockk<HttpService>(relaxed = true)
@@ -320,7 +483,12 @@ class ExporterTest {
         every { mockService.secure() } returns false
         every { mockRequest.path() } returns path
         every { mockRequest.method() } returns method
-        every { mockRequest.headers() } returns emptyList()
+        every { mockRequest.headers() } returns requestHeaders.map { (name, value) ->
+            mockk<HttpHeader>(relaxed = true).also {
+                every { it.name() } returns name
+                every { it.value() } returns value
+            }
+        }
         every { mockRequest.headerValue("Accept") } returns accept
         every { mockRequest.headerValue("Sec-Fetch-Dest") } returns secFetchDest
         every { mockRequest.headerValue("Access-Control-Request-Method") } returns accessControlRequestMethod

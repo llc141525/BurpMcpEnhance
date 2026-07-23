@@ -4,7 +4,7 @@
 
 ---
 
-<a id="中文"></a>
+`<a id="中文"></a>`
 
 # Burp Suite MCP Server -- 魔改增强版
 
@@ -64,12 +64,12 @@ http://127.0.0.1:9876/mcp
 
 ```json
 {
-  "mcpServers": {
-    "burp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
-    }
-  }
+	"mcpServers": {
+		"burp": {
+			"type": "http",
+			"url": "http://127.0.0.1:9876/mcp"
+		}
+	}
 }
 ```
 
@@ -81,17 +81,17 @@ http://127.0.0.1:9876/mcp
 
 ```json
 {
-  "mcpServers": {
-    "burp": {
-      "command": "java",
-      "args": [
-        "-jar",
-        "/path/to/mcp-proxy-all.jar",
-        "--sse-url",
-        "http://127.0.0.1:9876/sse"
-      ]
-    }
-  }
+	"mcpServers": {
+		"burp": {
+			"command": "java",
+			"args": [
+				"-jar",
+				"/path/to/mcp-proxy-all.jar",
+				"--sse-url",
+				"http://127.0.0.1:9876/sse"
+			]
+		}
+	}
 }
 ```
 
@@ -258,16 +258,16 @@ http://127.0.0.1:9876/mcp
 
 ## 配置说明
 
-| 选项 | 说明 | 默认值 |
-|------|------|--------|
-| 服务器主机 | 监听地址 | `127.0.0.1` |
-| 服务器端口 | 监听端口 | `9876` |
-| 严格 localhost 模式 | WSL/远程环境需关闭 | 开启 |
-| 启用保活心跳 | SSE 连接保活 | 开启 |
-| 保活间隔 | 心跳间隔（秒） | 30s |
-| 最大响应大小 | 单次响应上限（KB） | 100KB |
-| HTTP 请求审批 | 发送 HTTP 前需确认 | 开启 |
-| 历史记录访问审批 | 读取历史前需确认 | 开启 |
+| 选项                | 说明               | 默认值      |
+| ------------------- | ------------------ | ----------- |
+| 服务器主机          | 监听地址           | `127.0.0.1` |
+| 服务器端口          | 监听端口           | `9876`      |
+| 严格 localhost 模式 | WSL/远程环境需关闭 | 开启        |
+| 启用保活心跳        | SSE 连接保活       | 开启        |
+| 保活间隔            | 心跳间隔（秒）     | 30s         |
+| 最大响应大小        | 单次响应上限（KB） | 100KB       |
+| HTTP 请求审批       | 发送 HTTP 前需确认 | 开启        |
+| 历史记录访问审批    | 读取历史前需确认   | 开启        |
 
 ## 详细能力说明
 
@@ -320,68 +320,11 @@ http://127.0.0.1:9876/mcp
 
 ## 构建命令
 
-| 命令 | 说明 |
-|------|------|
+| 命令                      | 说明                       |
+| ------------------------- | -------------------------- |
 | `./gradlew embedProxyJar` | 构建最终可分发 JAR（推荐） |
-| `./gradlew test` | 运行测试 |
-| `./gradlew shadowJar` | 仅构建主 JAR |
-
-## 自动发布
-
-仓库内置了两条 GitHub Actions 流水线：
-
-- `CI`
-  每次 push 到 `master` 时自动测试、构建，并上传构建产物 Artifact
-- `Release`
-  推送 tag `v*` 时自动正式发布 GitHub Release
-  也支持在 GitHub Actions 页面手动触发
-
-推荐发布流程：
-
-```bash
-git push origin master
-git tag v1.2.2
-git push origin v1.2.2
-```
-
-CI 会自动：
-
-- 使用 Java 21 构建
-- 执行测试
-- 执行 `./gradlew embedProxyJar`
-- 上传 `build/libs/burp-mcp-all.jar` 作为 Actions Artifact
-
-Release 会自动：
-
-- 使用 Java 21 构建
-- 执行测试
-- 执行 `./gradlew embedProxyJar`
-- 上传 `build/libs/burp-mcp-all.jar`
-- 创建或更新对应版本 Release
-- 基于 GitHub 提交记录自动生成 Release notes
-
-## 开发
-
-工具定义主要位于：
-
-```text
-src/main/kotlin/net/portswigger/mcp/tools/
-```
-
-新增工具时，创建 `@Serializable` 参数类并在 `Tools.kt` 注册即可：
-
-```kotlin
-@Serializable
-data class MyToolArgs(val param: String)
-
-mcpTool<MyToolArgs>("工具描述") {
-    // your logic
-}
-```
-
----
-
-<a id="english"></a>
+| `./gradlew test`          | 运行测试                   |
+| `./gradlew shadowJar`     | 仅构建主 JAR               |
 
 # Burp Suite MCP Server -- Enhanced Edition
 
@@ -434,12 +377,12 @@ Recommended:
 
 ```json
 {
-  "mcpServers": {
-    "burp": {
-      "type": "http",
-      "url": "http://127.0.0.1:9876/mcp"
-    }
-  }
+	"mcpServers": {
+		"burp": {
+			"type": "http",
+			"url": "http://127.0.0.1:9876/mcp"
+		}
+	}
 }
 ```
 
@@ -447,17 +390,17 @@ For stdio-only clients:
 
 ```json
 {
-  "mcpServers": {
-    "burp": {
-      "command": "java",
-      "args": [
-        "-jar",
-        "/path/to/mcp-proxy-all.jar",
-        "--sse-url",
-        "http://127.0.0.1:9876/sse"
-      ]
-    }
-  }
+	"mcpServers": {
+		"burp": {
+			"command": "java",
+			"args": [
+				"-jar",
+				"/path/to/mcp-proxy-all.jar",
+				"--sse-url",
+				"http://127.0.0.1:9876/sse"
+			]
+		}
+	}
 }
 ```
 
@@ -553,42 +496,8 @@ Monitor server/cache state and adjust runtime behavior from the built-in dashboa
 
 ## Build Commands
 
-| Command | Description |
-|---------|-------------|
+| Command                   | Description                 |
+| ------------------------- | --------------------------- |
 | `./gradlew embedProxyJar` | Build the distributable JAR |
-| `./gradlew test` | Run tests |
-| `./gradlew shadowJar` | Build the main JAR only |
-
-## Automated Releases
-
-This repository includes two GitHub Actions workflows:
-
-- `CI`
-  builds and uploads an artifact on every push to `master`
-- `Release`
-  creates a formal GitHub Release when you push a `v*` tag
-  and can also be triggered manually from the Actions tab
-
-Recommended flow:
-
-```bash
-git push origin master
-git tag v1.2.2
-git push origin v1.2.2
-```
-
-CI will:
-
-- build with Java 21
-- run tests
-- run `./gradlew embedProxyJar`
-- upload `build/libs/burp-mcp-all.jar` as an Actions artifact
-
-Release will:
-
-- build with Java 21
-- run tests
-- run `./gradlew embedProxyJar`
-- upload `build/libs/burp-mcp-all.jar`
-- create or update the matching GitHub Release
-- generate Release notes automatically from GitHub commit history
+| `./gradlew test`          | Run tests                   |
+| `./gradlew shadowJar`     | Build the main JAR only     |

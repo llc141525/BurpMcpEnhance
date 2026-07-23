@@ -262,6 +262,25 @@ class DatabaseTest {
     }
 
     @Test
+    fun `raw duplicates are not stored by default`() {
+        val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
+        val t = System.currentTimeMillis()
+
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(1, "POST", 200, "http://example.com/login",
+                    null, "canonical-body", null, "canonical-response", "application/json", null, t, dedupKey = dedupKey),
+                ProxyHttpEntry(2, "POST", 200, "http://example.com/login",
+                    null, "duplicate-body", null, "duplicate-response", "application/json", null, t + 1000, dedupKey = dedupKey)
+            )
+        )
+
+        assertEquals(1, database.stats().proxyHttpCount)
+        assertEquals(0, database.stats().rawDuplicateCount)
+        assertEquals(2, database.getProxyHttpDetail(listOf(1)).first().hitCount)
+    }
+
+    @Test
     fun `getProxyHttpDetail with includeDuplicates returns raw entries on canonical`() {
         val dedupKey = Database.computeDedupKey("POST", "http://example.com/login")
         val t = System.currentTimeMillis()
@@ -331,6 +350,33 @@ class DatabaseTest {
         assertEquals(3, stats.rawDuplicateCount) // only 3 remain after pruning
         val canonical = database.getProxyHttpDetail(listOf(1)).first()
         assertEquals(5, canonical.hitCount)      // hit_count incremented for all 5 upserts
+    }
+
+    @Test
+    fun `raw duplicate bodies are capped independently and marked truncated`() {
+        val dedupKey = Database.computeDedupKey("POST", "http://example.com/upload")
+        val t = System.currentTimeMillis()
+
+        database.upsertProxyHttpHistory(
+            listOf(
+                ProxyHttpEntry(1, "POST", 200, "http://example.com/upload",
+                    null, "canonical-request-body", null, "canonical-response-body", "text/plain", null, t, dedupKey = dedupKey),
+                ProxyHttpEntry(2, "POST", 200, "http://example.com/upload",
+                    null, "abcdef", null, "uvwxyz", "text/plain", null, t + 1000, dedupKey = dedupKey)
+            ),
+            maxRawDuplicatesPerCanonical = 10,
+            maxRawDuplicateBodySize = 3
+        )
+
+        val duplicate = database.getProxyHttpDetail(listOf(1), includeDuplicates = true).first().duplicates.single()
+        assertEquals("abc", duplicate.requestBody)
+        assertEquals("uvw", duplicate.responseBody)
+        assertTrue(duplicate.requestBodyTruncated)
+        assertTrue(duplicate.responseBodyTruncated)
+
+        val canonical = database.getProxyHttpDetail(listOf(1)).first()
+        assertEquals("canonical-request-body", canonical.requestBody)
+        assertEquals("canonical-response-body", canonical.responseBody)
     }
 
     @Test
@@ -472,5 +518,44 @@ class DatabaseTest {
 
         val rows = database.queryProxyHttp(filter = "", limit = 3)
         assertEquals(3, rows.size)
+    }
+
+    @Test
+    fun `queryProxyHttp defaults to one lightweight UI page`() {
+        database.upsertProxyHttpHistory((1..150).map { i ->
+            ProxyHttpEntry(
+                i,
+                "GET",
+                200,
+                "http://example.com/$i",
+                "Header: value-$i",
+                "request-body-$i",
+                "Response: value-$i",
+                "response-body-$i",
+                "text/plain",
+                null,
+                i.toLong()
+            )
+        })
+
+        val rows = database.queryProxyHttp()
+
+        assertEquals(100, rows.size)
+        assertEquals(150, rows.first().id)
+        assertEquals(51, rows.last().id)
+    }
+
+    @Test
+    fun `queryProxyHttp captured_at sort uses covering index for unfiltered UI refresh`() {
+        database.upsertProxyHttpHistory((1..3).map { i ->
+            ProxyHttpEntry(i, "GET", 200, "http://example.com/$i", null, null, null, null, null, null, i.toLong())
+        })
+
+        val plan = database.explainQueryProxyHttpPlan(filter = "")
+
+        assertTrue(
+            plan.any { it.contains("idx_history_captured_at", ignoreCase = true) },
+            "Expected captured_at refresh query to use idx_history_captured_at, plan=$plan"
+        )
     }
 }

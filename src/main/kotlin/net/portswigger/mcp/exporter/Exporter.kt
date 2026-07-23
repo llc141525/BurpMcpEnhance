@@ -56,12 +56,23 @@ class Exporter(
     private val _totalExported = AtomicInteger(0)
     private val _lastExportTime = AtomicLong(0)
     private val _isRunning = AtomicInteger(0)
+    private val _historySeen = AtomicInteger(0)
+    private val _newEntriesSeen = AtomicInteger(0)
+    private val _filteredOutOfScope = AtomicInteger(0)
+    private val _filteredNoise = AtomicInteger(0)
+    private val _exportedThisCycle = AtomicInteger(0)
+    private val _lastCycleDurationMs = AtomicLong(0)
+
+    @Volatile
+    private var _lastCycleError: String? = null
 
     @Volatile
     private var isExportCycleRunning = false
 
     @Volatile
     private var lastProxyTimestampMs = 0L
+
+    private val processedProxyCursorKeys = mutableSetOf<String>()
 
     @Volatile
     private var lastKnownScannerIssueCount: Int? = null
@@ -71,6 +82,13 @@ class Exporter(
             isRunning = _isRunning.get() == 1,
             totalExported = _totalExported.get(),
             lastExportTime = _lastExportTime.get(),
+            historySeen = _historySeen.get(),
+            newEntriesSeen = _newEntriesSeen.get(),
+            filteredOutOfScope = _filteredOutOfScope.get(),
+            filteredNoise = _filteredNoise.get(),
+            exportedThisCycle = _exportedThisCycle.get(),
+            lastCycleDurationMs = _lastCycleDurationMs.get(),
+            lastCycleError = _lastCycleError,
             dbStats = database.stats()
         )
 
@@ -108,8 +126,7 @@ class Exporter(
     }
 
     fun reimport() {
-        lastProxyTimestampMs = 0L
-        lastKnownScannerIssueCount = null
+        resetWatermark()
         scope.launch {
             try {
                 exportProxyHttpHistory()
@@ -118,6 +135,18 @@ class Exporter(
                 api.logging().logToError("MCP Exporter reimport error: ${e.message}")
             }
         }
+    }
+
+    internal fun resetWatermark() {
+        lastProxyTimestampMs = 0L
+        lastKnownScannerIssueCount = null
+        synchronized(processedProxyCursorKeys) {
+            processedProxyCursorKeys.clear()
+        }
+    }
+
+    fun notifyDatabaseCleared() {
+        resetWatermark()
     }
 
     fun shutdown() {
@@ -132,29 +161,52 @@ class Exporter(
     }
 
     internal suspend fun exportProxyHttpHistory() {
-        withContext(Dispatchers.IO) {
-            val history = api.proxy().history()
-            val newEntries = if (lastProxyTimestampMs > 0) {
-                history.filter { it.time().toInstant().toEpochMilli() > lastProxyTimestampMs }
-            } else {
-                history
-            }
+        val startedAt = System.nanoTime()
+        _lastCycleError = null
+        _filteredOutOfScope.set(0)
+        _filteredNoise.set(0)
+        _exportedThisCycle.set(0)
+        try {
+            withContext(Dispatchers.IO) {
+                val history = api.proxy().history()
+                _historySeen.set(history.size)
+                val newEntries = history.filter { isAfterProxyCursor(it) }
+                _newEntriesSeen.set(newEntries.size)
 
-            if (newEntries.isEmpty()) return@withContext
+                val eligible = newEntries.filter { entry ->
+                    when (shouldExport(entry)) {
+                        ExportDecision.ACCEPT -> true
+                        ExportDecision.OUT_OF_SCOPE -> {
+                            _filteredOutOfScope.incrementAndGet()
+                            false
+                        }
+                        ExportDecision.NOISE -> {
+                            _filteredNoise.incrementAndGet()
+                            false
+                        }
+                        ExportDecision.INVALID -> false
+                    }
+                }
+                val entries = eligible.mapNotNull { it.toProxyHttpEntry(maxBodySize) }
+                if (entries.isNotEmpty()) {
+                    val maxRaw = if (config?.saveRawDuplicates == true) config?.maxRawDuplicatesPerCanonical ?: 10 else 0
+                    val maxRawBody = config?.maxRawDuplicateBodySize ?: 8192
+                    database.upsertProxyHttpHistory(
+                        entries,
+                        maxRawDuplicatesPerCanonical = maxRaw,
+                        maxRawDuplicateBodySize = maxRawBody
+                    )
+                    _totalExported.addAndGet(entries.size)
+                    _exportedThisCycle.set(entries.size)
+                }
 
-            val entries = newEntries
-                .filter { shouldExport(it) }
-                .mapNotNull { it.toProxyHttpEntry(maxBodySize) }
-            if (entries.isNotEmpty()) {
-                val maxRaw = if (config?.saveRawDuplicates != false) config?.maxRawDuplicatesPerCanonical ?: 10 else 0
-                database.upsertProxyHttpHistory(entries, maxRawDuplicatesPerCanonical = maxRaw)
-                _totalExported.addAndGet(entries.size)
+                advanceProxyCursor(newEntries)
             }
-
-            val maxTime = newEntries.maxOfOrNull { it.time().toInstant().toEpochMilli() }
-            if (maxTime != null && maxTime > lastProxyTimestampMs) {
-                lastProxyTimestampMs = maxTime
-            }
+        } catch (e: Exception) {
+            _lastCycleError = e.message ?: e::class.simpleName ?: "unknown error"
+            throw e
+        } finally {
+            _lastCycleDurationMs.set((System.nanoTime() - startedAt) / 1_000_000)
         }
     }
 
@@ -175,27 +227,60 @@ class Exporter(
         }
     }
 
-    private fun shouldExport(entry: ProxyHttpRequestResponse): Boolean {
-        val request = runCatching { entry.request() }.getOrNull() ?: return false
-        val url = buildUrl(request) ?: return false
+    private fun shouldExport(entry: ProxyHttpRequestResponse): ExportDecision {
+        val request = runCatching { entry.request() }.getOrNull() ?: return ExportDecision.INVALID
+        val url = buildUrl(request) ?: return ExportDecision.INVALID
 
         if (config?.exportInScopeOnly == true && !api.scope().isInScope(url)) {
-            return false
+            return ExportDecision.OUT_OF_SCOPE
         }
 
         val noiseMode = config?.exportNoiseMode ?: EXPORT_NOISE_MODE_BALANCED
         if (noiseMode != EXPORT_NOISE_MODE_OFF && isBrowserNoise(request, url, noiseMode)) {
-            return false
+            return ExportDecision.NOISE
         }
 
-        return true
+        return ExportDecision.ACCEPT
+    }
+
+    private fun isAfterProxyCursor(entry: ProxyHttpRequestResponse): Boolean {
+        val timestampMs = entry.time().toInstant().toEpochMilli()
+        if (lastProxyTimestampMs == 0L || timestampMs > lastProxyTimestampMs) return true
+        if (timestampMs < lastProxyTimestampMs) return false
+        return synchronized(processedProxyCursorKeys) {
+            proxyCursorKey(entry) !in processedProxyCursorKeys
+        }
+    }
+
+    private fun advanceProxyCursor(entries: List<ProxyHttpRequestResponse>) {
+        val maxTime = entries.maxOfOrNull { it.time().toInstant().toEpochMilli() } ?: return
+        val keysAtMaxTime = entries
+            .filter { it.time().toInstant().toEpochMilli() == maxTime }
+            .map { proxyCursorKey(it) }
+            .toSet()
+        synchronized(processedProxyCursorKeys) {
+            if (maxTime > lastProxyTimestampMs) {
+                processedProxyCursorKeys.clear()
+                lastProxyTimestampMs = maxTime
+            }
+            processedProxyCursorKeys.addAll(keysAtMaxTime)
+        }
     }
 }
+
+private enum class ExportDecision { ACCEPT, OUT_OF_SCOPE, NOISE, INVALID }
 
 data class ExporterStats(
     val isRunning: Boolean,
     val totalExported: Int,
     val lastExportTime: Long,
+    val historySeen: Int,
+    val newEntriesSeen: Int,
+    val filteredOutOfScope: Int,
+    val filteredNoise: Int,
+    val exportedThisCycle: Int,
+    val lastCycleDurationMs: Long,
+    val lastCycleError: String?,
     val dbStats: net.portswigger.mcp.db.DbStats
 )
 
@@ -216,7 +301,7 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
         val responseHeaders = response?.headers()?.joinToString("\r\n") { "${it.name()}: ${it.value()}" }
 
         ProxyHttpEntry(
-            id = this.time().toEpochSecond().toInt().coerceAtLeast(0),
+            id = stableProxyHttpId(this, method, url),
             method = method,
             status = response?.statusCode()?.toInt(),
             url = url,
@@ -227,7 +312,7 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
             contentType = contentType,
             paramNames = paramNames?.joinToString(","),
             capturedAt = System.currentTimeMillis(),
-            dedupKey = Database.computeDedupKey(method, signal.canonicalUrl),
+            dedupKey = Database.computeDedupKey(method, "${signal.canonicalUrl}|${requestStableRepresentation(request)}"),
             canonicalUrl = signal.canonicalUrl,
             endpointFingerprint = signal.endpointFingerprint,
             requestParamCount = signal.requestParamCount,
@@ -241,6 +326,30 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
         LogWriter.instance?.log("WARN", "exporter", "Failed to convert proxy entry: ${e.message}", e)
         null
     }
+}
+
+private fun stableProxyHttpId(entry: ProxyHttpRequestResponse, method: String, url: String): Int {
+    return Database.computeDedupKey(method, "$url|${entry.time().toInstant().toEpochMilli()}|${requestStableRepresentation(entry.request())}")
+        .take(8)
+        .toLong(16)
+        .toInt()
+        .and(Int.MAX_VALUE)
+}
+
+private fun proxyCursorKey(entry: ProxyHttpRequestResponse): String {
+    return runCatching {
+        val request = entry.request()
+        val url = buildUrl(request).orEmpty()
+        "${entry.time().toInstant().toEpochMilli()}|${request.method()}|$url|${requestStableRepresentation(request)}"
+    }.getOrDefault(entry.time().toInstant().toEpochMilli().toString())
+}
+
+private fun requestStableRepresentation(request: burp.api.montoya.http.message.requests.HttpRequest): String {
+    val headers = runCatching {
+        request.headers().joinToString("\n") { "${it.name()}: ${it.value()}" }
+    }.getOrDefault("")
+    val body = runCatching { request.body()?.toString().orEmpty() }.getOrDefault("")
+    return "$headers\n\n$body"
 }
 
 private fun buildUrl(request: burp.api.montoya.http.message.requests.HttpRequest): String? {

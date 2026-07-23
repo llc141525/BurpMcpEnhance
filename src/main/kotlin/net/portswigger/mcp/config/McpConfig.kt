@@ -32,17 +32,20 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     var host by storage.string("127.0.0.1")
     var port by storage.int(9876)
     var requireHttpRequestApproval by storage.boolean(false)
-    var requireHistoryAccessApproval by storage.boolean(true)
+    var requireHistoryAccessApproval by storage.boolean(false)
     var keepaliveEnabled by storage.boolean(true)
     var keepaliveIntervalSec by storage.int(30)
     var maxResponseSizeKb by storage.int(100)
     var strictLocalhostMode by storage.boolean(true)
+    var advancedMcpTools by storage.boolean(false)
+    var graphqlMcpTools by storage.boolean(false)
     var exportInScopeOnly by storage.boolean(false)
     var filterBrowserNoise by storage.boolean(true)
     private var _exportNoiseMode by storage.string("")
     private var _knownBurpPlugins by storage.stringList("")
-    var saveRawDuplicates by storage.boolean(true)
-    var maxRawDuplicatesPerCanonical by storage.int(10)
+    var saveRawDuplicates by storage.boolean(false)
+    var maxRawDuplicatesPerCanonical by storage.coercedInt(10, 0, 100)
+    var maxRawDuplicateBodySize by storage.coercedInt(8192, 0, 65_536)
 
     var exportNoiseMode: String
         get() {
@@ -226,6 +229,12 @@ fun PersistedObject.string(default: String) =
 
 fun PersistedObject.int(default: Int) =
     PersistedDelegate(getter = { key -> getInteger(key) ?: default }, setter = { key, value -> setInteger(key, value) })
+
+fun PersistedObject.coercedInt(default: Int, min: Int, max: Int) =
+    PersistedDelegate(
+        getter = { key -> (getInteger(key) ?: default).coerceIn(min, max) },
+        setter = { key, value -> setInteger(key, value.coerceIn(min, max)) }
+    )
 
 fun PersistedObject.stringList(default: String) =
     PersistedDelegate(getter = { key -> getString(key) ?: default }, setter = { key, value -> setString(key, value) })

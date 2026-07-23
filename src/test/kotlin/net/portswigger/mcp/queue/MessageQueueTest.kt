@@ -1,6 +1,7 @@
 package net.portswigger.mcp.queue
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
@@ -86,7 +87,7 @@ class MessageQueueTest {
             delay(200)
             val result = messageQueue.getResult(taskId)
             assertNotNull(result)
-            assertEquals(TaskStatus.FAILED, result!!.status)
+            assertEquals(TaskStatus.CANCELLED, result!!.status)
         }
     }
 
@@ -104,6 +105,81 @@ class MessageQueueTest {
             messageQueue.cleanup(maxAgeMs = 0)
             val result = messageQueue.getResult(taskId)
             assertNull(result)
+        }
+    }
+
+    @Test
+    fun `cleanup should remove old failed and cancelled tasks`() {
+        val failedTaskId = messageQueue.submit("test") { throw RuntimeException("boom") }
+        val cancelledTaskId = messageQueue.submit("test") {
+            delay(5000)
+            "should not complete"
+        }
+
+        assertTrue(messageQueue.cancelTask(cancelledTaskId))
+
+        runBlocking {
+            delay(200)
+            assertEquals(TaskStatus.FAILED, messageQueue.getResult(failedTaskId)?.status)
+            assertEquals(TaskStatus.CANCELLED, messageQueue.getResult(cancelledTaskId)?.status)
+
+            messageQueue.cleanup(maxAgeMs = 0)
+
+            assertNull(messageQueue.getResult(failedTaskId))
+            assertNull(messageQueue.getResult(cancelledTaskId))
+        }
+    }
+
+    @Test
+    fun `cleanup should not remove pending or running tasks`() {
+        val runningTaskId = messageQueue.submit("test") {
+            delay(5000)
+            "should not complete"
+        }
+
+        runBlocking {
+            delay(100)
+            messageQueue.cleanup(maxAgeMs = 0)
+
+            val result = messageQueue.getResult(runningTaskId)
+            assertNotNull(result)
+            assertEquals(TaskStatus.RUNNING, result!!.status)
+        }
+    }
+
+    @Test
+    fun `periodic cleanup should remove expired completed results`() {
+        messageQueue.shutdown()
+        messageQueue = MessageQueue(resultTtlMs = 0, cleanupIntervalMs = 50)
+
+        val taskId = messageQueue.submit("test") { "quick result" }
+
+        runBlocking {
+            delay(300)
+            assertNull(messageQueue.getResult(taskId))
+        }
+    }
+
+    @Test
+    fun `shutdown should stop cleanup job and cancel active tasks`() {
+        messageQueue.shutdown()
+        messageQueue = MessageQueue(resultTtlMs = 0, cleanupIntervalMs = 50)
+        val taskCancelled = CompletableDeferred<Boolean>()
+
+        messageQueue.submit("test") {
+            try {
+                delay(5000)
+                "should not complete"
+            } finally {
+                taskCancelled.complete(true)
+            }
+        }
+
+        runBlocking {
+            delay(100)
+            messageQueue.shutdown()
+
+            assertTrue(taskCancelled.await())
         }
     }
 

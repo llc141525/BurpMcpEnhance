@@ -5,6 +5,8 @@ import kotlinx.serialization.Serializable
 import net.portswigger.mcp.db.Database
 import net.portswigger.mcp.exporter.Exporter
 
+private const val DETAIL_BODY_MAX_BYTES = 8192
+
 @Serializable
 data class ListProxyHttpHistory(override val count: Int = 30, override val offset: Int = 0) : Paginated
 
@@ -35,7 +37,7 @@ data class ExporterStats(val dummy: Boolean = true)
 @Serializable
 data class ClearDatabase(val target: String = "all")
 
-fun Server.registerExporterTools(database: Database, exporter: Exporter) {
+fun Server.registerExporterTools(database: Database, exporter: Exporter, advancedTools: Boolean = false) {
 
     mcpTool<ListProxyHttpHistory>(
         "Lists proxy HTTP history from local cache. Returns lightweight entries with id, method, status, url, " +
@@ -117,7 +119,11 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
     ) {
         val idList = ids.split(",").mapNotNull { it.trim().toIntOrNull() }
         if (idList.isEmpty()) return@mcpTool "No valid IDs provided: $ids"
-        val entries = database.getProxyHttpDetail(idList, includeDuplicates = include_duplicates)
+        val entries = database.getProxyHttpDetail(
+            idList,
+            includeDuplicates = include_duplicates,
+            includeBodies = include_body
+        )
         if (entries.isEmpty()) return@mcpTool "No entries found for IDs: $ids"
         entries.joinToString("\n\n---\n\n") { entry ->
             buildString {
@@ -138,8 +144,13 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                 appendLine("--- Request ---")
                 entry.requestHeaders?.let { appendLine(it) }
                 if (include_body && !entry.requestBody.isNullOrBlank()) {
+                    val body = entry.requestBody.limitUtf8Bytes(DETAIL_BODY_MAX_BYTES)
                     appendLine()
-                    append(entry.requestBody)
+                    append(body.value)
+                    if (body.truncated) {
+                        appendLine()
+                        appendLine("[Request body truncated to ${DETAIL_BODY_MAX_BYTES / 1024}KB]")
+                    }
                 } else if (!entry.requestBody.isNullOrBlank()) {
                     appendLine()
                     appendLine("Request body omitted. Re-run with include_body=true to inspect it.")
@@ -148,10 +159,13 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                 appendLine("--- Response ---")
                 entry.responseHeaders?.let { appendLine(it) }
                 if (include_body && !entry.responseBody.isNullOrBlank()) {
+                    val body = entry.responseBody.limitUtf8Bytes(DETAIL_BODY_MAX_BYTES)
                     appendLine()
-                    append(entry.responseBody)
-                    appendLine()
-                    appendLine("[Body truncated to 8KB]")
+                    append(body.value)
+                    if (body.truncated) {
+                        appendLine()
+                        appendLine("[Response body truncated to ${DETAIL_BODY_MAX_BYTES / 1024}KB]")
+                    }
                 } else if (!entry.responseBody.isNullOrBlank()) {
                     appendLine()
                     appendLine("Response body omitted. Re-run with include_body=true to inspect it.")
@@ -163,9 +177,17 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
                         appendLine()
                         appendLine("Duplicate ${i + 1}:")
                         dup.requestHeaders?.let { appendLine(it) }
-                        if (!dup.requestBody.isNullOrBlank()) {
+                        if (include_body && !dup.requestBody.isNullOrBlank()) {
+                            val body = dup.requestBody.limitUtf8Bytes(DETAIL_BODY_MAX_BYTES)
                             appendLine()
-                            append(dup.requestBody)
+                            append(body.value)
+                            if (body.truncated || dup.requestBodyTruncated) {
+                                appendLine()
+                                appendLine("[Duplicate request body truncated]")
+                            }
+                        } else if (dup.requestBodyTruncated) {
+                            appendLine()
+                            appendLine("Duplicate request body omitted and was truncated at capture time.")
                         }
                     }
                 }
@@ -229,6 +251,13 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
             appendLine("Exporter running: ${stats.isRunning}")
             appendLine("Total exported: ${stats.totalExported}")
             appendLine("Last export: ${if (stats.lastExportTime > 0) "yes" else "never"}")
+            appendLine("History seen (last cycle): ${stats.historySeen}")
+            appendLine("New entries (last cycle): ${stats.newEntriesSeen}")
+            appendLine("Filtered out of scope (last cycle): ${stats.filteredOutOfScope}")
+            appendLine("Filtered noise (last cycle): ${stats.filteredNoise}")
+            appendLine("Exported (last cycle): ${stats.exportedThisCycle}")
+            appendLine("Last cycle duration: ${stats.lastCycleDurationMs} ms")
+            stats.lastCycleError?.let { appendLine("Last cycle error: $it") }
             appendLine("Database proxy HTTP entries: ${stats.dbStats.proxyHttpCount}")
             appendLine("Database scanner issues: ${stats.dbStats.scannerIssueCount}")
             if (stats.dbStats.blobCount > 0) appendLine("Database large responses: ${stats.dbStats.blobCount}")
@@ -236,24 +265,40 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter) {
         }
     }
 
-    mcpTool<ClearDatabase>(
-        "Clears cached data from the local database. Use target=\"all\" to clear everything, " +
-        "\"proxy_history\" to clear only proxy HTTP history, or \"scanner_issues\" to clear only scanner issues."
-    ) {
-        when (target.lowercase()) {
-            "all" -> {
-                database.clearAll()
-                "Database cleared successfully"
+    if (advancedTools) {
+        mcpTool<ClearDatabase>(
+            "Clears cached data from the local database. Use target=\"all\" to clear everything, " +
+            "\"proxy_history\" to clear only proxy HTTP history, or \"scanner_issues\" to clear only scanner issues."
+        ) {
+            when (target.lowercase()) {
+                "all" -> {
+                    database.clearAll()
+                    exporter.notifyDatabaseCleared()
+                    "Database cleared successfully"
+                }
+                "proxy_history" -> {
+                    database.clearProxyHttpHistory()
+                    exporter.notifyDatabaseCleared()
+                    "Proxy HTTP history cleared"
+                }
+                "scanner_issues" -> {
+                    database.clearScannerIssues()
+                    "Scanner issues cleared"
+                }
+                else -> "Invalid target: $target. Use \"all\", \"proxy_history\", or \"scanner_issues\"."
             }
-            "proxy_history" -> {
-                database.clearProxyHttpHistory()
-                "Proxy HTTP history cleared"
-            }
-            "scanner_issues" -> {
-                database.clearScannerIssues()
-                "Scanner issues cleared"
-            }
-            else -> "Invalid target: $target. Use \"all\", \"proxy_history\", or \"scanner_issues\"."
         }
     }
+}
+
+private data class LimitedBody(val value: String, val truncated: Boolean)
+
+private fun String.limitUtf8Bytes(maxBytes: Int): LimitedBody {
+    val bytes = toByteArray(Charsets.UTF_8)
+    if (bytes.size <= maxBytes) return LimitedBody(this, false)
+    var end = maxBytes
+    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) {
+        end--
+    }
+    return LimitedBody(String(bytes, 0, end, Charsets.UTF_8), true)
 }

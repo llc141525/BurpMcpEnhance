@@ -9,13 +9,18 @@ import burp.api.montoya.scanner.BuiltInAuditConfiguration
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.security.HttpRequestSecurity
 
 @Serializable
 data class ManageScope(
     val action: String,
-    val url: String
+    val url: String = ""
 )
 
 @Serializable
@@ -32,48 +37,99 @@ data class StartActiveScan(
     val content: String? = null
 )
 
-fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
+fun Server.registerScopeTools(
+    api: MontoyaApi,
+    config: McpConfig,
+    advancedTools: Boolean = false,
+    onScopeChanged: () -> Unit = {}
+) {
 
     mcpTool<ManageScope>(
-        "Manages Burp's target scope. action: 'add' to include URL in scope, " +
-        "'remove' to exclude URL from scope, 'check' to test if a URL is currently in scope. " +
+        "Manages Burp's target scope. " +
+        "action: 'add' — include URL in scope (url required); " +
+        "'ensure' — idempotently include URL only if missing (url required); " +
+        "'remove' — exclude URL from scope (url required); " +
+        "'check' — test if URL is currently in scope (url required); " +
+        "'list' — export all current scope rules as JSON (url not needed); " +
+        "'clear' — remove all include rules from scope (url not needed). " +
         "URL examples: 'https://example.com', 'https://api.example.com/v1/'. " +
-        "Always check scope before testing to avoid out-of-scope requests."
+        "To backup/restore scope: action='list' to get JSON, then use set_project_options " +
+        "with that JSON wrapped under a top-level 'project_options' key to restore."
     ) {
         when (action.lowercase()) {
             "add" -> {
+                if (url.isBlank()) return@mcpTool "URL is required for action: add"
                 api.scope().includeInScope(url)
+                onScopeChanged()
                 "Added to scope: $url"
             }
+            "ensure" -> {
+                if (url.isBlank()) return@mcpTool "URL is required for action: ensure"
+                if (api.scope().isInScope(url)) {
+                    "Scope unchanged: $url is already in scope"
+                } else {
+                    api.scope().includeInScope(url)
+                    onScopeChanged()
+                    "Scope added: $url"
+                }
+            }
             "remove" -> {
+                if (url.isBlank()) return@mcpTool "URL is required for action: remove"
                 api.scope().excludeFromScope(url)
+                onScopeChanged()
                 "Removed from scope: $url"
             }
             "check" -> {
+                if (url.isBlank()) return@mcpTool "URL is required for action: check"
                 if (api.scope().isInScope(url)) "In scope: $url" else "NOT in scope: $url"
             }
-            else -> "Invalid action: $action. Use 'add', 'remove', or 'check'."
+            "list" -> {
+                val raw = api.burpSuite().exportProjectOptionsAsJson()
+                try {
+                    val scope = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+                        .jsonObject["project_options"]
+                        ?.jsonObject?.get("target")
+                        ?.jsonObject?.get("scope")
+                    "Current scope (project_options.target.scope):\n${scope ?: "not found"}"
+                } catch (e: Exception) {
+                    "Could not parse scope: ${e.message}\nRaw:\n$raw"
+                }
+            }
+            "clear" -> {
+                val raw = api.burpSuite().exportProjectOptionsAsJson()
+                try {
+                    val cleared = clearScopeIncludes(raw)
+                    api.burpSuite().importProjectOptionsFromJson(cleared)
+                    onScopeChanged()
+                    "All scope include rules cleared."
+                } catch (e: Exception) {
+                    "Failed to clear scope: ${e.message}"
+                }
+            }
+            else -> "Invalid action: $action. Use 'add', 'ensure', 'remove', 'check', 'list', or 'clear'."
         }
     }
 
-    mcpPaginatedTool<GetSiteMap>(
-        "Returns discovered URLs from Burp's site map, populated by proxy traffic. " +
-        "Optionally filter by URL prefix (e.g. 'https://api.example.com'). " +
-        "Shows method, URL, and status code. Use count ≤ 20 to stay within token limits."
-    ) {
-        val entries = if (urlPrefix != null) {
-            api.siteMap().requestResponses().filter { rr ->
-                rr.request()?.url()?.startsWith(urlPrefix) == true
+    if (advancedTools) {
+        mcpPaginatedTool<GetSiteMap>(
+            "Returns discovered URLs from Burp's site map, populated by proxy traffic. " +
+            "Optionally filter by URL prefix (e.g. 'https://api.example.com'). " +
+            "Shows method, URL, and status code. Use count ≤ 20 to stay within token limits."
+        ) {
+            val entries = if (urlPrefix != null) {
+                api.siteMap().requestResponses().filter { rr ->
+                    rr.request()?.url()?.startsWith(urlPrefix) == true
+                }
+            } else {
+                api.siteMap().requestResponses()
             }
-        } else {
-            api.siteMap().requestResponses()
-        }
-        entries.asSequence().map { rr ->
-            val req = rr.request()
-            val resp = rr.response()
-            buildString {
-                append("${req?.method() ?: "?"} ${req?.url() ?: "?"}")
-                resp?.let { append(" [${it.statusCode()}]") }
+            entries.asSequence().map { rr ->
+                val req = rr.request()
+                val resp = rr.response()
+                buildString {
+                    append("${req?.method() ?: "?"} ${req?.url() ?: "?"}")
+                    resp?.let { append(" [${it.statusCode()}]") }
+                }
             }
         }
     }
@@ -101,6 +157,11 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
             val port = if (parsed.port == -1) (if (parsed.protocol == "https") 443 else 80) else parsed.port
             val secure = parsed.protocol == "https"
             val path = if (parsed.file.isNullOrEmpty()) "/" else parsed.file
+            val scopeCheck = if (api.scope().isInScope(url)) "in scope" else "NOT in scope"
+            if (scopeCheck == "NOT in scope") {
+                return@mcpTool "Active scan not started: $url is NOT in scope. " +
+                    "Call manage_scope(action=\"ensure\", url=\"$url\") first."
+            }
 
             val requestText = buildScanRequestText(content, host, path)
 
@@ -122,10 +183,23 @@ fun Server.registerScopeTools(api: MontoyaApi, config: McpConfig) {
                 audit.addRequestResponse(response)
                 val mode = if (content.isNullOrBlank()) "bare GET" else "custom request"
                 "Active scan started: $url (auditType=$auditType, $mode). " +
-                "Poll results with list_scanner_issues."
+                "Scope check: $scopeCheck. Poll results with list_scanner_issues."
             }
         }
     }
+}
+
+internal fun clearScopeIncludes(rawProjectOptionsJson: String): String {
+    val root = Json.parseToJsonElement(rawProjectOptionsJson).jsonObject
+    val projectOptions = root["project_options"]?.jsonObject ?: error("project_options not found")
+    val target = projectOptions["target"]?.jsonObject ?: error("project_options.target not found")
+    val scope = target["scope"]?.jsonObject ?: error("project_options.target.scope not found")
+
+    val updatedScope = JsonObject(scope + ("include" to JsonArray(emptyList())))
+    val updatedTarget = JsonObject(target + ("scope" to updatedScope))
+    val updatedProjectOptions = JsonObject(projectOptions + ("target" to updatedTarget))
+    val updatedRoot: JsonElement = JsonObject(root + ("project_options" to updatedProjectOptions))
+    return Json.encodeToString(JsonElement.serializer(), updatedRoot)
 }
 
 internal fun normalizeScanRequestContent(content: String): String =
