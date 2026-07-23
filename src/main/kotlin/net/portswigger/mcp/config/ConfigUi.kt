@@ -88,6 +88,7 @@ class ConfigUi(
             )
             if (result == JOptionPane.YES_OPTION) {
                 (database as? Database)?.clearAll()
+                (exporter as? net.portswigger.mcp.exporter.Exporter)?.notifyDatabaseCleared()
                 httpHistoryPanel.loadData()
             }
         }

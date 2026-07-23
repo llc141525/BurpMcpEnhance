@@ -72,6 +72,8 @@ class Database(dbPath: String = ":memory:") {
                     request_body     TEXT,
                     response_headers TEXT,
                     response_body    TEXT,
+                    request_body_truncated INTEGER NOT NULL DEFAULT 0,
+                    response_body_truncated INTEGER NOT NULL DEFAULT 0,
                     content_type     TEXT,
                     captured_at      INTEGER NOT NULL
                 )
@@ -123,6 +125,15 @@ class Database(dbPath: String = ":memory:") {
             try { execute("CREATE INDEX IF NOT EXISTS idx_history_score ON proxy_http_history(endpoint_score DESC, captured_at DESC)") } catch (e: Exception) {
                 net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX score: ${e.message}", e)
             }
+            try { execute("CREATE INDEX IF NOT EXISTS idx_history_captured_at ON proxy_http_history(captured_at DESC, id DESC)") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration CREATE INDEX captured_at: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_raw_duplicates ADD COLUMN request_body_truncated INTEGER NOT NULL DEFAULT 0") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER raw request_body_truncated: ${e.message}", e)
+            }
+            try { execute("ALTER TABLE proxy_http_raw_duplicates ADD COLUMN response_body_truncated INTEGER NOT NULL DEFAULT 0") } catch (e: Exception) {
+                net.portswigger.mcp.logging.LogWriter.instance?.log("WARN", "db", "Migration ALTER raw response_body_truncated: ${e.message}", e)
+            }
             close()
         }
     }
@@ -136,8 +147,11 @@ class Database(dbPath: String = ":memory:") {
 
     fun upsertProxyHttpHistory(
         entries: List<ProxyHttpEntry>,
-        maxRawDuplicatesPerCanonical: Int = 0
+        maxRawDuplicatesPerCanonical: Int = 0,
+        maxRawDuplicateBodySize: Int = 8192
     ) {
+        val rawDuplicateLimit = maxRawDuplicatesPerCanonical.coerceIn(0, 100)
+        val rawDuplicateBodyLimit = maxRawDuplicateBodySize.coerceIn(0, 65_536)
         connection.autoCommit = false
         try {
             data class RawToInsert(val canonicalId: Int, val entry: ProxyHttpEntry)
@@ -225,26 +239,30 @@ class Database(dbPath: String = ":memory:") {
 
             // Store raw duplicates and update hit_count
             if (rawToInsert.isNotEmpty()) {
-                if (maxRawDuplicatesPerCanonical > 0) {
+                if (rawDuplicateLimit > 0) {
                     val rawInsertStmt = connection.prepareStatement(
                         "INSERT INTO proxy_http_raw_duplicates " +
                         "(canonical_id, method, status, url, request_headers, request_body, " +
-                        "response_headers, response_body, content_type, captured_at) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                        "response_headers, response_body, request_body_truncated, response_body_truncated, content_type, captured_at) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     )
                     val canonicalIdsForPruning = mutableSetOf<Int>()
                     try {
                         for (dup in rawToInsert) {
+                            val requestBody = dup.entry.requestBody.truncateForRawDuplicate(rawDuplicateBodyLimit)
+                            val responseBody = dup.entry.responseBody.truncateForRawDuplicate(rawDuplicateBodyLimit)
                             rawInsertStmt.setInt(1, dup.canonicalId)
                             rawInsertStmt.setString(2, dup.entry.method)
                             if (dup.entry.status != null) rawInsertStmt.setInt(3, dup.entry.status) else rawInsertStmt.setNull(3, java.sql.Types.INTEGER)
                             rawInsertStmt.setString(4, dup.entry.url)
                             rawInsertStmt.setString(5, dup.entry.requestHeaders)
-                            rawInsertStmt.setString(6, dup.entry.requestBody)
+                            rawInsertStmt.setString(6, requestBody.value)
                             rawInsertStmt.setString(7, dup.entry.responseHeaders)
-                            rawInsertStmt.setString(8, dup.entry.responseBody)
-                            rawInsertStmt.setString(9, dup.entry.contentType)
-                            rawInsertStmt.setLong(10, dup.entry.capturedAt)
+                            rawInsertStmt.setString(8, responseBody.value)
+                            rawInsertStmt.setInt(9, if (requestBody.truncated) 1 else 0)
+                            rawInsertStmt.setInt(10, if (responseBody.truncated) 1 else 0)
+                            rawInsertStmt.setString(11, dup.entry.contentType)
+                            rawInsertStmt.setLong(12, dup.entry.capturedAt)
                             rawInsertStmt.addBatch()
                             canonicalIdsForPruning.add(dup.canonicalId)
                         }
@@ -253,7 +271,7 @@ class Database(dbPath: String = ":memory:") {
                         rawInsertStmt.close()
                     }
                     for (canonicalId in canonicalIdsForPruning) {
-                        pruneRawDuplicates(canonicalId, maxRawDuplicatesPerCanonical)
+                        pruneRawDuplicates(canonicalId, rawDuplicateLimit)
                     }
                 }
 
@@ -363,7 +381,7 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    fun queryProxyHttp(filter: String = "", limit: Int = 500): List<HttpHistoryRow> {
+    fun queryProxyHttp(filter: String = "", limit: Int = 100): List<HttpHistoryRow> {
         connection.autoCommit = true
         val hasFilter = filter.isNotBlank()
         val sql = if (hasFilter) {
@@ -412,12 +430,62 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    fun getProxyHttpDetail(ids: List<Int>, includeDuplicates: Boolean = false): List<ProxyHttpEntry> {
+    fun explainQueryProxyHttpPlan(filter: String = ""): List<String> {
+        connection.autoCommit = true
+        val hasFilter = filter.isNotBlank()
+        val sql = if (hasFilter) {
+            """EXPLAIN QUERY PLAN
+               SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
+               FROM proxy_http_history
+               WHERE url LIKE ? OR method LIKE ? OR CAST(status AS TEXT) LIKE ?
+               ORDER BY captured_at DESC, id DESC LIMIT ?"""
+        } else {
+            """EXPLAIN QUERY PLAN
+               SELECT id, method, status, url, content_type, COALESCE(hit_count, 1) as hit_count, captured_at
+               FROM proxy_http_history
+               ORDER BY captured_at DESC, id DESC LIMIT ?"""
+        }
+        val stmt = connection.prepareStatement(sql)
+        try {
+            if (hasFilter) {
+                val like = "%$filter%"
+                stmt.setString(1, like)
+                stmt.setString(2, like)
+                stmt.setString(3, like)
+                stmt.setInt(4, 100)
+            } else {
+                stmt.setInt(1, 100)
+            }
+            val rs = stmt.executeQuery()
+            try {
+                val plan = mutableListOf<String>()
+                while (rs.next()) {
+                    plan.add(rs.getString("detail"))
+                }
+                return plan
+            } finally {
+                rs.close()
+            }
+        } finally {
+            stmt.close()
+        }
+    }
+
+    fun getProxyHttpDetail(
+        ids: List<Int>,
+        includeDuplicates: Boolean = false,
+        includeBodies: Boolean = true
+    ): List<ProxyHttpEntry> {
         if (ids.isEmpty()) return emptyList()
         connection.autoCommit = true
         val placeholders = ids.joinToString(",") { "?" }
+        val requestBodyColumn = if (includeBodies) "request_body" else "NULL AS request_body"
+        val responseBodyColumn = if (includeBodies) "response_body" else "NULL AS response_body"
         val stmt = connection.prepareStatement(
-            "SELECT *, COALESCE(hit_count, 1) as hit_count FROM proxy_http_history WHERE id IN ($placeholders) ORDER BY id DESC"
+            "SELECT id, method, status, url, request_headers, $requestBodyColumn, response_headers, $responseBodyColumn, " +
+                "content_type, param_names, captured_at, canonical_url, endpoint_fingerprint, request_param_count, " +
+                "response_summary, sensitive_marker_count, auth_required_hint, endpoint_score, candidate_reason, " +
+                "COALESCE(hit_count, 1) as hit_count FROM proxy_http_history WHERE id IN ($placeholders) ORDER BY id DESC"
         )
         try {
             ids.forEachIndexed { index, id -> stmt.setInt(index + 1, id) }
@@ -448,7 +516,7 @@ class Database(dbPath: String = ":memory:") {
                             endpointScore = rs.getInt("endpoint_score"),
                             candidateReason = rs.getString("candidate_reason"),
                             hitCount = rs.getInt("hit_count"),
-                            duplicates = if (includeDuplicates) getRawDuplicates(canonicalId) else emptyList()
+                            duplicates = if (includeDuplicates) getRawDuplicates(canonicalId, includeBodies) else emptyList()
                         )
                     )
                 }
@@ -511,10 +579,13 @@ class Database(dbPath: String = ":memory:") {
         }
     }
 
-    private fun getRawDuplicates(canonicalId: Int): List<RawDuplicateEntry> {
+    private fun getRawDuplicates(canonicalId: Int, includeBodies: Boolean): List<RawDuplicateEntry> {
+        val requestBodyColumn = if (includeBodies) "request_body" else "NULL AS request_body"
+        val responseBodyColumn = if (includeBodies) "response_body" else "NULL AS response_body"
         val stmt = connection.prepareStatement(
-            """SELECT id, method, status, url, request_headers, request_body,
-                      response_headers, response_body, content_type, captured_at
+            """SELECT id, method, status, url, request_headers, $requestBodyColumn,
+                      response_headers, $responseBodyColumn, request_body_truncated,
+                      response_body_truncated, content_type, captured_at
                FROM proxy_http_raw_duplicates
                WHERE canonical_id = ?
                ORDER BY captured_at DESC"""
@@ -534,6 +605,8 @@ class Database(dbPath: String = ":memory:") {
                         requestBody = rs.getString("request_body"),
                         responseHeaders = rs.getString("response_headers"),
                         responseBody = rs.getString("response_body"),
+                        requestBodyTruncated = rs.getInt("request_body_truncated") != 0,
+                        responseBodyTruncated = rs.getInt("response_body_truncated") != 0,
                         contentType = rs.getString("content_type"),
                         capturedAt = rs.getLong("captured_at")
                     )
@@ -646,25 +719,29 @@ class Database(dbPath: String = ":memory:") {
 
     fun stats(): DbStats {
         connection.autoCommit = true
-        val stmt = connection.createStatement()
+        val stmt = connection.prepareStatement(
+            """SELECT
+                   (SELECT COUNT(*) FROM proxy_http_history) AS proxy_http_count,
+                   (SELECT COUNT(*) FROM scanner_issues) AS scanner_issue_count,
+                   (SELECT COUNT(*) FROM large_responses) AS blob_count,
+                   (SELECT COUNT(*) FROM proxy_http_raw_duplicates) AS raw_duplicate_count"""
+        )
         try {
-            val httpRs = stmt.executeQuery("SELECT COUNT(*) FROM proxy_http_history")
-            val httpCount = if (httpRs.next()) httpRs.getInt(1) else 0
-            httpRs.close()
-
-            val scannerRs = stmt.executeQuery("SELECT COUNT(*) FROM scanner_issues")
-            val scannerCount = if (scannerRs.next()) scannerRs.getInt(1) else 0
-            scannerRs.close()
-
-            val blobRs = stmt.executeQuery("SELECT COUNT(*) FROM large_responses")
-            val blobCount = if (blobRs.next()) blobRs.getInt(1) else 0
-            blobRs.close()
-
-            val rawDupRs = stmt.executeQuery("SELECT COUNT(*) FROM proxy_http_raw_duplicates")
-            val rawDupCount = if (rawDupRs.next()) rawDupRs.getInt(1) else 0
-            rawDupRs.close()
-
-            return DbStats(proxyHttpCount = httpCount, scannerIssueCount = scannerCount, blobCount = blobCount, rawDuplicateCount = rawDupCount)
+            val rs = stmt.executeQuery()
+            try {
+                return if (rs.next()) {
+                    DbStats(
+                        proxyHttpCount = rs.getInt("proxy_http_count"),
+                        scannerIssueCount = rs.getInt("scanner_issue_count"),
+                        blobCount = rs.getInt("blob_count"),
+                        rawDuplicateCount = rs.getInt("raw_duplicate_count")
+                    )
+                } else {
+                    DbStats(proxyHttpCount = 0, scannerIssueCount = 0)
+                }
+            } finally {
+                rs.close()
+            }
         } finally {
             stmt.close()
         }
@@ -861,9 +938,25 @@ data class RawDuplicateEntry(
     val requestBody: String?,
     val responseHeaders: String?,
     val responseBody: String?,
+    val requestBodyTruncated: Boolean = false,
+    val responseBodyTruncated: Boolean = false,
     val contentType: String?,
     val capturedAt: Long
 )
+
+private data class TruncatedBody(val value: String?, val truncated: Boolean)
+
+private fun String?.truncateForRawDuplicate(maxBytes: Int): TruncatedBody {
+    if (this == null) return TruncatedBody(null, false)
+    val bytes = toByteArray(Charsets.UTF_8)
+    if (bytes.size <= maxBytes) return TruncatedBody(this, false)
+    if (maxBytes <= 0) return TruncatedBody("", true)
+    var end = maxBytes
+    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) {
+        end--
+    }
+    return TruncatedBody(String(bytes, 0, end, Charsets.UTF_8), true)
+}
 
 data class HttpHistoryRow(
     val id: Int,

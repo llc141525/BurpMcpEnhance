@@ -2,6 +2,7 @@ package net.portswigger.mcp.plugins
 
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.core.BurpSuiteEdition
+import net.portswigger.mcp.db.DbStats
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -46,6 +47,13 @@ data class BurpPluginInventory(
         }
 }
 
+data class BurpPluginImpactDiagnostics(
+    val dbStats: DbStats,
+    val exporterLastCycleDurationMs: Long?,
+    val exporterHistorySeen: Int?,
+    val exporterNewEntriesSeen: Int?
+)
+
 private val json = Json { ignoreUnknownKeys = true }
 
 val KNOWN_BURP_PLUGINS = listOf(
@@ -77,7 +85,11 @@ fun collectBurpPluginInventory(api: MontoyaApi, configuredPlugins: List<String>)
     )
 }
 
-fun buildBurpInfoSummary(api: MontoyaApi, inventory: BurpPluginInventory): String {
+fun buildBurpInfoSummary(
+    api: MontoyaApi,
+    inventory: BurpPluginInventory,
+    diagnostics: BurpPluginImpactDiagnostics? = null
+): String {
     val version = api.burpSuite().version()
     val edition = version.edition()
     val isPro = edition == BurpSuiteEdition.PROFESSIONAL
@@ -99,7 +111,12 @@ fun buildBurpInfoSummary(api: MontoyaApi, inventory: BurpPluginInventory): Strin
         appendLine()
         appendLine("Third-party plugin support:")
         appendLine("  Detection source: ${inventory.detectionSource}")
-        appendLine("  Detected/configured plugins: ${inventory.effectivePluginNames.size}")
+        appendLine("  Detected plugins: ${inventory.detectedPlugins.size}")
+        appendLine("  Configured plugins: ${inventory.configuredPlugins.size}")
+        appendLine("  Effective plugins: ${inventory.effectivePluginNames.size}")
+        appendLine("  Request-handler plugins currently known/configured: ${inventory.matchedKnownPlugins.count { it.autoAppliesToSendHttp }}")
+        appendLine("  Scanner/discovery plugins currently known/configured: ${inventory.matchedKnownPlugins.count { it.autoAppliesToActiveScan }}")
+        appendLine("  MCP base cache and HTTP tools do not depend on third-party plugins.")
         if (inventory.effectivePluginNames.isEmpty()) {
             appendLine("  No third-party plugins detected. You can add known plugin names in the MCP tab UI.")
         } else {
@@ -108,16 +125,27 @@ fun buildBurpInfoSummary(api: MontoyaApi, inventory: BurpPluginInventory): Strin
                 appendLine("    - $pluginName")
             }
         }
+        diagnostics?.let {
+            appendLine()
+            appendLine("Read-only impact metrics:")
+            appendLine("  MCP cache HTTP history rows: ${it.dbStats.proxyHttpCount}")
+            appendLine("  MCP cache scanner issue rows: ${it.dbStats.scannerIssueCount}")
+            appendLine("  Last Exporter cycle duration: ${it.exporterLastCycleDurationMs?.let { value -> "${value}ms" } ?: "unknown"}")
+            appendLine("  History growth last cycle: seen=${it.exporterHistorySeen ?: "unknown"} new=${it.exporterNewEntriesSeen ?: "unknown"}")
+        }
         appendLine()
         appendLine("Request-handler plugins that can affect send_http1_request if installed:")
         inventory.knownPlugins.filter { it.autoAppliesToSendHttp }.forEach { plugin ->
             appendLine("  - ${plugin.name}")
         }
         appendLine()
-        appendLine("Scanner/discovery plugins that can participate in start_active_scan if installed:")
+        appendLine("Scanner/discovery plugins that may participate in active scanning if installed:")
         inventory.knownPlugins.filter { it.autoAppliesToActiveScan }.forEach { plugin ->
             appendLine("  - ${plugin.name}")
         }
+        appendLine()
+        appendLine("A/B test suggestion:")
+        appendLine("  Disable a plugin group, restart Burp, keep the same traffic, then compare CPU, heap memory, history growth rate, and Exporter cycle duration.")
         if (isPro) {
             appendLine()
             appendLine("Pro-only tools:")

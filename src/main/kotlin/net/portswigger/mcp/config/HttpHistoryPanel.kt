@@ -11,6 +11,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.*
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
@@ -59,6 +60,8 @@ class HttpHistoryPanel : JPanel() {
     private var refreshTimer: Timer? = null
     private val timeFmt = SimpleDateFormat("HH:mm:ss")
     private lateinit var tableScrollPane: JScrollPane
+    private val loadSequence = AtomicLong(0)
+    @Volatile private var cachedStats: CachedStats? = null
 
     init {
         layout = BorderLayout()
@@ -204,7 +207,7 @@ class HttpHistoryPanel : JPanel() {
 
     private fun scheduleSearch() {
         searchTimer?.stop()
-        searchTimer = Timer(300) { loadData() }.apply { isRepeats = false; start() }
+        searchTimer = Timer(SEARCH_DEBOUNCE_MS) { loadData() }.apply { isRepeats = false; start() }
     }
 
     private fun resizeUrlColumn() {
@@ -225,10 +228,12 @@ class HttpHistoryPanel : JPanel() {
         val db = database ?: return
         val filter = searchField.text.trim()
         val connCount = activeConnectionProvider?.invoke() ?: 0
+        val sequence = loadSequence.incrementAndGet()
         CoroutineScope(Dispatchers.IO).launch {
-            val rows = db.queryProxyHttp(filter = filter, limit = 500)
-            val stats = db.stats()
+            val rows = db.queryProxyHttp(filter = filter, limit = HISTORY_TABLE_LIMIT)
+            val stats = getCachedStats(db)
             SwingUtilities.invokeLater {
+                if (sequence != loadSequence.get()) return@invokeLater
                 updateTable(rows)
                 httpCountBadge.text = "HTTP ${stats.proxyHttpCount}"
                 scanCountBadge.text = "扫描 ${stats.scannerIssueCount}"
@@ -268,7 +273,7 @@ class HttpHistoryPanel : JPanel() {
     fun startRefreshing() {
         loadData()
         refreshTimer?.stop()
-        refreshTimer = Timer(5000) { loadData() }.apply { start() }
+        refreshTimer = Timer(AUTO_REFRESH_INTERVAL_MS) { loadData() }.apply { start() }
         SwingUtilities.invokeLater { resizeUrlColumn() }
     }
 
@@ -277,6 +282,26 @@ class HttpHistoryPanel : JPanel() {
         refreshTimer = null
         searchTimer?.stop()
         searchTimer = null
+    }
+
+    private fun getCachedStats(db: Database): net.portswigger.mcp.db.DbStats {
+        val now = System.currentTimeMillis()
+        val current = cachedStats
+        if (current != null && now - current.loadedAtMs < STATS_CACHE_MS) {
+            return current.stats
+        }
+        val stats = db.stats()
+        cachedStats = CachedStats(stats, now)
+        return stats
+    }
+
+    private data class CachedStats(val stats: net.portswigger.mcp.db.DbStats, val loadedAtMs: Long)
+
+    companion object {
+        const val HISTORY_TABLE_LIMIT = 100
+        const val AUTO_REFRESH_INTERVAL_MS = 15_000
+        const val SEARCH_DEBOUNCE_MS = 300
+        const val STATS_CACHE_MS = 15_000L
     }
 }
 

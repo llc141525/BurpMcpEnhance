@@ -1,0 +1,2 @@
+[mcp_servers.burp]
+url = "http://10.221.161.54:9876/sse"

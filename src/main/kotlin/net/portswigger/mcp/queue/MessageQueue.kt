@@ -5,12 +5,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
-class MessageQueue(private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())) {
+class MessageQueue(
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val resultTtlMs: Long = DEFAULT_RESULT_TTL_MS,
+    private val cleanupIntervalMs: Long = DEFAULT_CLEANUP_INTERVAL_MS
+) {
 
     private val pendingTasks = ConcurrentLinkedQueue<Task>()
     private val results = ConcurrentHashMap<String, TaskResult>()
     private val taskCounter = AtomicInteger(0)
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val cleanupJob = scope.launch {
+        while (isActive) {
+            delay(cleanupIntervalMs)
+            cleanup(resultTtlMs)
+        }
+    }
 
     private val _stats = MutableQueueStats()
     val stats: QueueStats get() = _stats.snapshot()
@@ -35,6 +45,14 @@ class MessageQueue(private val scope: CoroutineScope = CoroutineScope(Dispatcher
                     completedAt = System.currentTimeMillis()
                 )
                 _stats.incrementCompleted()
+            } catch (e: CancellationException) {
+                results[taskId] = TaskResult(
+                    taskId = taskId,
+                    status = TaskStatus.CANCELLED,
+                    error = "Cancelled",
+                    completedAt = System.currentTimeMillis()
+                )
+                throw e
             } catch (e: Exception) {
                 results[taskId] = TaskResult(
                     taskId = taskId,
@@ -63,7 +81,7 @@ class MessageQueue(private val scope: CoroutineScope = CoroutineScope(Dispatcher
         job.cancel()
         results[taskId] = TaskResult(
             taskId = taskId,
-            status = TaskStatus.FAILED,
+            status = TaskStatus.CANCELLED,
             error = "Cancelled",
             completedAt = System.currentTimeMillis()
         )
@@ -86,8 +104,18 @@ class MessageQueue(private val scope: CoroutineScope = CoroutineScope(Dispatcher
     }
 
     fun shutdown() {
-        clear()
+        cleanupJob.cancel()
+        activeJobs.values.forEach { it.cancel() }
+        activeJobs.clear()
+        pendingTasks.clear()
+        results.clear()
+        _stats.reset()
         scope.cancel()
+    }
+
+    companion object {
+        const val DEFAULT_RESULT_TTL_MS: Long = 300_000
+        const val DEFAULT_CLEANUP_INTERVAL_MS: Long = 60_000
     }
 
     private class MutableQueueStats {

@@ -21,6 +21,7 @@ import net.portswigger.mcp.config.McpConfig
 import net.portswigger.mcp.config.normalizeExportNoiseMode
 import net.portswigger.mcp.db.Database
 import net.portswigger.mcp.exporter.Exporter
+import net.portswigger.mcp.plugins.BurpPluginImpactDiagnostics
 import net.portswigger.mcp.plugins.buildBurpInfoSummary
 import net.portswigger.mcp.plugins.collectBurpPluginInventory
 import net.portswigger.mcp.queue.FileQueue
@@ -53,6 +54,24 @@ private fun truncateIfNeeded(serialized: String): String {
     }
 }
 
+private const val RAW_HISTORY_DEFAULT_LIMIT = 10
+private const val RAW_HISTORY_MAX_LIMIT = 20
+private const val RAW_HISTORY_DEFAULT_MAX_BYTES = 50_000
+private const val RAW_HISTORY_MAX_BYTES = 100_000
+
+private fun limitedRawHistoryResponse(items: Sequence<String>, offset: Int, requestedLimit: Int?, requestedMaxBytes: Int): String {
+    val limit = (requestedLimit ?: RAW_HISTORY_DEFAULT_LIMIT).coerceIn(1, RAW_HISTORY_MAX_LIMIT)
+    val maxBytes = requestedMaxBytes.coerceIn(1_000, RAW_HISTORY_MAX_BYTES)
+    val page = items.drop(offset.coerceAtLeast(0)).take(limit).toList()
+    val joined = joinWithSizeLimit(page, maxSize = maxBytes)
+    return when {
+        page.isEmpty() -> "Reached end of items"
+        joined.contains("response truncated") || requestedLimit == null || (requestedLimit > RAW_HISTORY_MAX_LIMIT) ->
+            "$joined\n\n[Raw history limited: limit=$limit maxBytes=$maxBytes. Prefer cached list/detail tools.]"
+        else -> joined
+    }
+}
+
 fun Server.registerTools(
     api: MontoyaApi,
     config: McpConfig,
@@ -61,17 +80,18 @@ fun Server.registerTools(
     database: Database? = null,
     exporter: Exporter? = null
 ) {
+    val advancedTools = config.advancedMcpTools
     // Register queue/file tools if infrastructure is available
-    if (messageQueue != null && fileQueue != null) {
+    if (advancedTools && messageQueue != null && fileQueue != null) {
         registerQueueTools(api, messageQueue, fileQueue)
     }
     // Register exporter/two-tier query tools if infrastructure is available
     if (database != null && exporter != null) {
-        registerExporterTools(database, exporter)
+        registerExporterTools(database, exporter, advancedTools)
         registerDiffTools(database)
     }
-    registerScopeTools(api, config)
-    registerGraphQLTools(api, config)
+    registerScopeTools(api, config, advancedTools) { exporter?.reimport() }
+    if (config.graphqlMcpTools) registerGraphQLTools(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {
@@ -92,6 +112,7 @@ fun Server.registerTools(
         response?.toString() ?: "<no response>"
     }
 
+    if (advancedTools) {
     mcpTool<SendHttp2Request>("Issues an HTTP/2 request and returns the response. Do NOT pass headers to the body parameter.") {
         val http2RequestDisplay = buildString {
             pseudoHeaders.forEach { (key, value) ->
@@ -190,7 +211,7 @@ fun Server.registerTools(
     val toolingDisabledMessage =
         "User has disabled configuration editing. They can enable it in the MCP tab in Burp by selecting 'Enable tools that can edit your config'"
 
-    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
+    mcpTool<SetProjectOptions>("Sets project-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting project-level configuration: $json")
             api.burpSuite().importProjectOptionsFromJson(json)
@@ -202,7 +223,7 @@ fun Server.registerTools(
     }
 
 
-    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'project_options' object!") {
+    mcpTool<SetUserOptions>("Sets user-level configuration in JSON format. This will be merged with existing configuration. Make sure to export before doing this, so you know what the schema is. Make sure the JSON has a top level 'user_options' object!") {
         if (config.configEditingTooling) {
             api.logging().logToOutput("Setting user-level configuration: $json")
             api.burpSuite().importUserOptionsFromJson(json)
@@ -260,17 +281,17 @@ fun Server.registerTools(
         }
     }
 
-    mcpPaginatedTool<GetProxyHttpHistory>(
+    mcpTool<GetProxyHttpHistory>(
         "Displays items within the proxy HTTP history. Optionally filter with a Java regex pattern via the 'regex' param. " +
-        "Use count ≤ 20 per request to avoid truncation."
+        "Advanced raw history reader. Explicitly pass limit ≤ 20 and maxBytes ≤ 100000; optional startTimeMs/endTimeMs are accepted for client-side time windows when available. Prefer cached list_proxy_http_history/get_proxy_http_detail."
     ) {
         val allowed = runBlocking {
             checkHistoryPermissionOrDeny(HistoryAccessType.HTTP_HISTORY, config, api, "HTTP history")
         }
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("HTTP history access denied by Burp Suite")
+            return@mcpTool "HTTP history access denied by Burp Suite"
         }
-        if (regex != null) {
+        val items = if (regex != null) {
             val compiledRegex = Pattern.compile(regex)
             api.proxy().history { it.contains(compiledRegex) }.asSequence()
                 .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
@@ -278,19 +299,20 @@ fun Server.registerTools(
             api.proxy().history().asSequence()
                 .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
         }
+        limitedRawHistoryResponse(items, offset, limit ?: count, maxBytes)
     }
 
-    mcpPaginatedTool<GetProxyWebsocketHistory>(
+    mcpTool<GetProxyWebsocketHistory>(
         "Displays items within the proxy WebSocket history. Optionally filter with a Java regex pattern via the 'regex' param. " +
-        "Use count ≤ 20 per request to avoid truncation."
+        "Advanced raw history reader. Explicitly pass limit ≤ 20 and maxBytes ≤ 100000; optional startTimeMs/endTimeMs are accepted for client-side time windows when available."
     ) {
         val allowed = runBlocking {
             checkHistoryPermissionOrDeny(HistoryAccessType.WEBSOCKET_HISTORY, config, api, "WebSocket history")
         }
         if (!allowed) {
-            return@mcpPaginatedTool sequenceOf("WebSocket history access denied by Burp Suite")
+            return@mcpTool "WebSocket history access denied by Burp Suite"
         }
-        if (regex != null) {
+        val items = if (regex != null) {
             val compiledRegex = Pattern.compile(regex)
             api.proxy().webSocketHistory { it.contains(compiledRegex) }.asSequence()
                 .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
@@ -298,6 +320,7 @@ fun Server.registerTools(
             api.proxy().webSocketHistory().asSequence()
                 .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
         }
+        limitedRawHistoryResponse(items, offset, limit ?: count, maxBytes)
     }
 
     mcpTool<SetTaskExecutionEngineState>("Sets the state of Burp's task execution engine (paused or unpaused)") {
@@ -400,6 +423,7 @@ fun Server.registerTools(
             append("description=${config.exportNoiseModeDescription()}")
         }
     }
+    }
 
     mcpTool("get_burp_info",
         "Returns Burp Suite edition, version, and a summary of available MCP tool categories. " +
@@ -409,7 +433,16 @@ fun Server.registerTools(
         "Also reports third-party plugin visibility when Burp exposes it or when configured in the MCP UI."
     ) {
         val inventory = collectBurpPluginInventory(api, config.getKnownBurpPluginsList())
-        buildBurpInfoSummary(api, inventory)
+        val exporterStats = exporter?.stats
+        val diagnostics = database?.let {
+            BurpPluginImpactDiagnostics(
+                dbStats = it.stats(),
+                exporterLastCycleDurationMs = exporterStats?.lastCycleDurationMs,
+                exporterHistorySeen = exporterStats?.historySeen,
+                exporterNewEntriesSeen = exporterStats?.newEntriesSeen
+            )
+        }
+        buildBurpInfoSummary(api, inventory, diagnostics)
     }
 }
 
@@ -508,15 +541,23 @@ data class GetScannerIssues(override val count: Int, override val offset: Int) :
 @Serializable
 data class GetProxyHttpHistory(
     val regex: String? = null,
-    override val count: Int,
-    override val offset: Int
+    val limit: Int? = null,
+    val maxBytes: Int = RAW_HISTORY_DEFAULT_MAX_BYTES,
+    val startTimeMs: Long? = null,
+    val endTimeMs: Long? = null,
+    override val count: Int = RAW_HISTORY_DEFAULT_LIMIT,
+    override val offset: Int = 0
 ) : Paginated
 
 @Serializable
 data class GetProxyWebsocketHistory(
     val regex: String? = null,
-    override val count: Int,
-    override val offset: Int
+    val limit: Int? = null,
+    val maxBytes: Int = RAW_HISTORY_DEFAULT_MAX_BYTES,
+    val startTimeMs: Long? = null,
+    val endTimeMs: Long? = null,
+    override val count: Int = RAW_HISTORY_DEFAULT_LIMIT,
+    override val offset: Int = 0
 ) : Paginated
 
 @Serializable

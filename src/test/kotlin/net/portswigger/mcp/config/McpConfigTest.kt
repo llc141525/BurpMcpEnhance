@@ -37,6 +37,8 @@ class McpConfigTest {
                 storage[key] as? Int ?: when (key) {
                     "keepaliveIntervalSec" -> 30
                     "maxResponseSizeKb" -> 100
+                    "maxRawDuplicatesPerCanonical" -> 10
+                    "maxRawDuplicateBodySize" -> 8192
                     else -> 0
                 }
             }
@@ -296,6 +298,40 @@ class McpConfigTest {
     }
 
     @Test
+    fun `requireHistoryAccessApproval should default to false when unset`() {
+        val storage = mutableMapOf<String, Any>()
+        val unsetStorage = mockk<PersistedObject>().apply {
+            every { getBoolean(any()) } answers { storage[firstArg()] as? Boolean }
+            every { getString(any()) } answers { storage[firstArg()] as? String }
+            every { getInteger(any()) } answers { storage[firstArg()] as? Int }
+            every { setBoolean(any(), any()) } answers { storage[firstArg()] = secondArg<Boolean>() }
+            every { setString(any(), any()) } answers { storage[firstArg()] = secondArg<String>() }
+            every { setInteger(any(), any()) } answers { storage[firstArg()] = secondArg<Int>() }
+        }
+
+        val unsetConfig = McpConfig(unsetStorage, mockLogging)
+
+        assertFalse(unsetConfig.requireHistoryAccessApproval)
+    }
+
+    @Test
+    fun `requireHistoryAccessApproval should preserve persisted true`() {
+        val storage = mutableMapOf<String, Any>("requireHistoryAccessApproval" to true)
+        val persistedTrueStorage = mockk<PersistedObject>().apply {
+            every { getBoolean(any()) } answers { storage[firstArg()] as? Boolean }
+            every { getString(any()) } answers { storage[firstArg()] as? String }
+            every { getInteger(any()) } answers { storage[firstArg()] as? Int }
+            every { setBoolean(any(), any()) } answers { storage[firstArg()] = secondArg<Boolean>() }
+            every { setString(any(), any()) } answers { storage[firstArg()] = secondArg<String>() }
+            every { setInteger(any(), any()) } answers { storage[firstArg()] = secondArg<Int>() }
+        }
+
+        val persistedTrueConfig = McpConfig(persistedTrueStorage, mockLogging)
+
+        assertTrue(persistedTrueConfig.requireHistoryAccessApproval)
+    }
+
+    @Test
     fun `keepaliveEnabled should default to true`() {
         assertTrue(config.keepaliveEnabled)
     }
@@ -372,6 +408,23 @@ class McpConfigTest {
         assertFalse(config.filterBrowserNoise)
         verify { persistedObject.setBoolean("exportInScopeOnly", true) }
         verify { persistedObject.setBoolean("filterBrowserNoise", false) }
+    }
+
+    @Test
+    fun `raw duplicate settings should default off and coerce persisted limits`() {
+        assertFalse(config.saveRawDuplicates)
+        assertEquals(10, config.maxRawDuplicatesPerCanonical)
+        assertEquals(8192, config.maxRawDuplicateBodySize)
+
+        config.saveRawDuplicates = true
+        config.maxRawDuplicatesPerCanonical = -1
+        config.maxRawDuplicateBodySize = 100_000
+
+        assertTrue(config.saveRawDuplicates)
+        assertEquals(0, config.maxRawDuplicatesPerCanonical)
+        assertEquals(65_536, config.maxRawDuplicateBodySize)
+        verify { persistedObject.setInteger("maxRawDuplicatesPerCanonical", 0) }
+        verify { persistedObject.setInteger("maxRawDuplicateBodySize", 65_536) }
     }
 
     @Test

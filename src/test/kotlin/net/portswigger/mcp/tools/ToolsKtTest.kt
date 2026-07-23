@@ -3,6 +3,7 @@ package net.portswigger.mcp.tools
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.burpsuite.TaskExecutionEngine
 import burp.api.montoya.collaborator.*
+import burp.api.montoya.core.Annotations
 import burp.api.montoya.core.BurpSuiteEdition
 import burp.api.montoya.core.ByteArray
 import burp.api.montoya.http.Http
@@ -10,6 +11,7 @@ import burp.api.montoya.http.HttpMode
 import burp.api.montoya.http.HttpProtocol
 import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
+import burp.api.montoya.http.message.responses.HttpResponse
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
@@ -44,6 +46,7 @@ import org.junit.jupiter.api.Test
 import java.net.ServerSocket
 import javax.swing.JTextArea
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.Serializable
 
@@ -76,7 +79,9 @@ class ToolsKtTest {
                     "_alwaysAllowWebSocketHistory" to false,
                     "keepaliveEnabled" to true,
                     "strictLocalhostMode" to true,
-                    "filterBrowserNoise" to true
+                    "filterBrowserNoise" to true,
+                    "advancedMcpTools" to true,
+                    "graphqlMcpTools" to true
                 )
             )
             configIntStore.putAll(
@@ -184,6 +189,67 @@ class ToolsKtTest {
         unmockkStatic(HttpHeader::class)
         unmockkStatic(burp.api.montoya.http.HttpService::class)
         unmockkStatic(HttpRequest::class)
+    }
+
+    @Nested
+    inner class McpDefaultToolRegistrationTests {
+        @BeforeEach
+        fun restartInDefaultMode() {
+            config.advancedMcpTools = false
+            config.graphqlMcpTools = false
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @Test
+        fun `default MCP tool set should contain no more than 15 tools`() {
+            runBlocking {
+                val names = client.listTools().map { it.name }.sorted()
+                assertTrue(names.size <= 15, "Default tool count should be <= 15 but was ${names.size}: $names")
+            }
+        }
+
+        @Test
+        fun `advanced mode should restore high cost tools under original names`() {
+            config.advancedMcpTools = true
+            config.graphqlMcpTools = true
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}/sse")
+                val names = client.listTools().map { it.name }
+                listOf(
+                    "get_proxy_http_history",
+                    "get_proxy_websocket_history",
+                    "create_repeater_tab",
+                    "url_encode",
+                    "graphql_introspect"
+                ).forEach { expected ->
+                    assertTrue(names.contains(expected), "$expected missing from advanced tools: $names")
+                }
+            }
+        }
     }
 
     @Nested
@@ -1216,6 +1282,118 @@ class ToolsKtTest {
         }
     }
 
+    @Nested
+    inner class ActiveScanToolTests {
+        private val scanner = mockk<burp.api.montoya.scanner.Scanner>()
+        private val audit = mockk<burp.api.montoya.scanner.audit.Audit>()
+        private val httpForScan = mockk<Http>()
+        private val capturedScanRequestText = slot<String>()
+
+        @BeforeEach
+        fun setupActiveScan() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val version = mockk<burp.api.montoya.core.Version>()
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.version() } returns version
+            every { version.edition() } returns BurpSuiteEdition.PROFESSIONAL
+            every { burpSuite.taskExecutionEngine() } returns mockk(relaxed = true)
+            every { burpSuite.exportProjectOptionsAsJson() } returns "{}"
+            every { burpSuite.exportUserOptionsAsJson() } returns "{}"
+
+            // AuditConfiguration.auditConfiguration(...) is a Burp-runtime factory; mock it so the test JVM is self-contained.
+            mockkStatic(burp.api.montoya.scanner.AuditConfiguration::class)
+            every {
+                burp.api.montoya.scanner.AuditConfiguration.auditConfiguration(any<burp.api.montoya.scanner.BuiltInAuditConfiguration>())
+            } returns mockk(relaxed = true)
+
+            every { api.scanner() } returns scanner
+            every { scanner.startAudit(any()) } returns audit
+            every { audit.addRequestResponse(any()) } just runs
+
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.isInScope(any<String>()) } returns false
+            every { scope.isInScope("https://example.com/api/user") } returns true
+            every { scope.isInScope("https://example.com/api/user?id=1") } returns true
+
+            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            every { httpResponse.toString() } returns "HTTP/1.1 200 OK"
+            every { api.http() } returns httpForScan
+            every { httpForScan.sendRequest(any<HttpRequest>()) } returns httpResponse
+
+            every {
+                HttpRequest.httpRequest(any<burp.api.montoya.http.HttpService>(), capture(capturedScanRequestText))
+            } answers {
+                mockk<HttpRequest>().also { req -> every { req.toString() } returns secondArg<String>() }
+            }
+
+            serverManager.stop {}
+            serverStarted = false
+            serverManager.start(config) { state ->
+                if (state is ServerState.Running) serverStarted = true
+            }
+            runBlocking {
+                var attempts = 0
+                while (!serverStarted && attempts < 30) {
+                    delay(100)
+                    attempts++
+                }
+                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
+                client.connectToServer("http://127.0.0.1:${testPort}/sse")
+            }
+        }
+
+        @AfterEach
+        fun cleanupActiveScan() {
+            unmockkStatic(burp.api.montoya.scanner.AuditConfiguration::class)
+        }
+
+        @Test
+        fun `start_active_scan audits provided raw request preserving POST body`() {
+            runBlocking {
+                val raw = "POST /api/user HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\"id\":1}"
+                val result = client.callTool(
+                    "start_active_scan", mapOf(
+                        "url" to "https://example.com/api/user",
+                        "content" to raw
+                    )
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("Active scan started"), "Expected scan to start: $text")
+            }
+
+            assertTrue(
+                capturedScanRequestText.captured.startsWith("POST /api/user HTTP/1.1"),
+                "Audited request should preserve POST method/path: ${capturedScanRequestText.captured}"
+            )
+            assertTrue(
+                capturedScanRequestText.captured.contains("{\"id\":1}"),
+                "Audited request should preserve JSON body: ${capturedScanRequestText.captured}"
+            )
+            verify(exactly = 1) { audit.addRequestResponse(any()) }
+        }
+
+        @Test
+        fun `start_active_scan falls back to bare GET when content omitted`() {
+            runBlocking {
+                val result = client.callTool(
+                    "start_active_scan", mapOf(
+                        "url" to "https://example.com/api/user?id=1"
+                    )
+                )
+                delay(100)
+                result.expectTextContent()
+            }
+
+            assertTrue(
+                capturedScanRequestText.captured.startsWith("GET /api/user?id=1 HTTP/1.1"),
+                "Fallback audited request should be a bare GET: ${capturedScanRequestText.captured}"
+            )
+            verify(exactly = 1) { audit.addRequestResponse(any()) }
+        }
+    }
+
     @Test
     fun `tool name conversion should work properly`() {
         assertEquals("send_http1_request", "SendHttp1Request".toLowerSnakeCase())
@@ -1465,9 +1643,46 @@ class ToolsKtTest {
             runBlocking {
                 val result = client.callTool("get_proxy_http_detail", mapOf("ids" to "31"))
                 val text = result.expectTextContent()
-                assertTrue(text.contains("Request body omitted"), "Expected request omission notice: $text")
-                assertTrue(text.contains("Response body omitted"), "Expected response omission notice: $text")
+                assertTrue(text.contains("--- Request ---"), "Expected request section: $text")
+                assertTrue(text.contains("--- Response ---"), "Expected response section: $text")
+                assertTrue(text.contains("Content-Type: application/json"), "Expected headers to remain available: $text")
+                assertFalse(text.contains("Request body omitted"), "Default path must not infer body presence by reading body columns: $text")
+                assertFalse(text.contains("Response body omitted"), "Default path must not infer body presence by reading body columns: $text")
+                assertFalse(text.contains("""{"user":"alice"}"""), "Request body should not be in default output: $text")
                 assertFalse(text.contains("{\"token\":\"secret\"}"), "Body should not be in default output: $text")
+            }
+        }
+
+        @Test
+        fun `raw proxy history should enforce explicit limit and maxBytes`() {
+            val proxy = mockk<Proxy>()
+            val proxyHistory = (1..50).map { i ->
+                val request = mockk<HttpRequest>()
+                val response = mockk<HttpResponse>()
+                val annotations = mockk<Annotations>()
+                every { request.toString() } returns "GET /item$i HTTP/1.1"
+                every { response.toString() } returns "HTTP/1.1 200 OK\r\n\r\n${"x".repeat(500)}"
+                every { annotations.notes() } returns "Item $i notes"
+                mockk<ProxyHttpRequestResponse>().also {
+                    every { it.request() } returns request
+                    every { it.response() } returns response
+                    every { it.annotations() } returns annotations
+                }
+            }
+
+            every { api.proxy() } returns proxy
+            every { proxy.history() } returns proxyHistory
+
+            runBlocking {
+                val result = client.callTool(
+                    "get_proxy_http_history",
+                    mapOf("limit" to 50, "maxBytes" to 1200, "offset" to 0)
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.length <= 1400, "Response should be capped by maxBytes with small overhead: ${text.length}")
+                assertFalse(text.contains("/item50"), "Server-side limit should prevent returning all requested entries")
+                assertTrue(text.contains("truncated") || text.contains("limited"), "Response should disclose limiting: $text")
             }
         }
 
@@ -1547,7 +1762,13 @@ class ToolsKtTest {
                     mapOf("ids" to "1", "include_duplicates" to true))
                 val text = result.expectTextContent()
                 assertTrue(text.contains("Raw Duplicates"), "Output should contain Raw Duplicates section: $text")
-                assertTrue(text.contains("""{"user":"bob"}"""), "Output should contain bob's body: $text")
+                assertFalse(text.contains("""{"user":"bob"}"""), "Default duplicate output should not include raw body: $text")
+
+                val withBody = client.callTool("get_proxy_http_detail",
+                    mapOf("ids" to "1", "include_duplicates" to true, "include_body" to true))
+                val withBodyText = withBody.expectTextContent()
+                assertTrue(withBodyText.contains("Raw Duplicates"), "Output should contain Raw Duplicates section: $withBodyText")
+                assertTrue(withBodyText.contains("""{"user":"bob"}"""), "Explicit include_body should contain bob's body: $withBodyText")
             }
         }
 
@@ -2011,6 +2232,92 @@ class ToolsKtTest {
                 delay(100)
                 assertTrue(r2.expectTextContent().contains("NOT in scope"))
             }
+        }
+
+        @Test
+        fun `manage_scope ensure should not add when URL is already in scope`() {
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.isInScope("https://example.com") } returns true
+            every { scope.includeInScope(any<String>()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "manage_scope", mapOf("action" to "ensure", "url" to "https://example.com")
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("unchanged"), "Expected unchanged result: $text")
+            }
+
+            verify(exactly = 0) { scope.includeInScope(any<String>()) }
+        }
+
+        @Test
+        fun `manage_scope ensure should add missing URL once`() {
+            val scope = mockk<burp.api.montoya.scope.Scope>()
+            every { api.scope() } returns scope
+            every { scope.isInScope("https://example.com") } returns false
+            every { scope.includeInScope(any<String>()) } just runs
+
+            runBlocking {
+                val result = client.callTool(
+                    "manage_scope", mapOf("action" to "ensure", "url" to "https://example.com")
+                )
+                delay(100)
+                val text = result.expectTextContent()
+                assertTrue(text.contains("added"), "Expected added result: $text")
+            }
+
+            verify(exactly = 1) { scope.includeInScope("https://example.com") }
+        }
+
+        @Test
+        fun `manage_scope list and clear should preserve unrelated project option arrays`() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val imported = slot<String>()
+            val rawOptions = """
+                {
+                  "project_options": {
+                    "target": {
+                      "scope": {
+                        "include": [{"protocol":"https","host":"example.com","port":"443"}],
+                        "exclude": [{"host":"logout.example.com"}]
+                      },
+                      "sitemap": {
+                        "include": [{"host":"sitemap.example.com"}]
+                      }
+                    },
+                    "scanner": {
+                      "custom_insertions": [{"name":"body"}]
+                    }
+                  }
+                }
+            """.trimIndent()
+
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.exportProjectOptionsAsJson() } returns rawOptions
+            every { burpSuite.importProjectOptionsFromJson(capture(imported)) } just runs
+
+            runBlocking {
+                val listResult = client.callTool("manage_scope", mapOf("action" to "list"))
+                delay(100)
+                val listText = listResult.expectTextContent()
+                assertTrue(listText.contains("logout.example.com"), "List should include scope JSON: $listText")
+
+                val clearResult = client.callTool("manage_scope", mapOf("action" to "clear"))
+                delay(100)
+                assertTrue(clearResult.expectTextContent().contains("cleared"))
+            }
+
+            val updated = Json.parseToJsonElement(imported.captured).jsonObject
+            val projectOptions = updated["project_options"]!!.jsonObject
+            val target = projectOptions["target"]!!.jsonObject
+            val scopeObject = target["scope"]!!.jsonObject
+            assertEquals(0, scopeObject["include"]!!.jsonArray.size)
+            assertTrue(scopeObject["exclude"].toString().contains("logout.example.com"))
+            assertTrue(target["sitemap"].toString().contains("sitemap.example.com"))
+            assertTrue(projectOptions["scanner"].toString().contains("custom_insertions"))
         }
 
         @Test
